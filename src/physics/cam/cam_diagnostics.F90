@@ -7,7 +7,7 @@ module cam_diagnostics
 use shr_kind_mod,    only: r8 => shr_kind_r8
 use camsrfexch,      only: cam_in_t, cam_out_t
 use cam_control_mod, only: moist_physics
-use physics_types,   only: physics_state, physics_tend, physics_ptend
+use physics_types,   only: physics_state, physics_tend, physics_ptend, physics_state_copy, set_wet_to_dry
 use ppgrid,          only: pcols, pver, begchunk, endchunk
 use physics_buffer,  only: physics_buffer_desc, pbuf_add_field, dtype_r8
 use physics_buffer,  only: dyn_time_lvls, pbuf_get_field, pbuf_get_index, pbuf_old_tim_idx
@@ -197,6 +197,7 @@ contains
     integer :: istage
     ! outfld calls in diag_phys_writeout
     call addfld (cnst_name(1), (/ 'lev' /), 'A', 'kg/kg',    cnst_longname(1))
+    call addfld ('QDRY',       (/ 'lev' /), 'A', 'kg/kg',    'Q dry mixing ratio')
     call addfld ('NSTEP',      horiz_only,  'A', 'timestep', 'Model timestep')
     call addfld ('PHIS',       horiz_only,  'I', 'm2/s2',    'Surface geopotential')
 
@@ -944,6 +945,7 @@ contains
     real(r8), pointer :: psl(:)   ! Sea Level Pressure
 
     integer  :: i, k, m, lchnk, ncol, nstep
+    type(physics_state) :: state_loc    ! Local copy of state
     !
     !-----------------------------------------------------------------------
     !
@@ -972,6 +974,11 @@ contains
         call outfld(cnst_name(m), state%q(1,1,m), pcols, lchnk)
       end if
     end do
+
+    ! Copy the state to state_loc array to convert to dry mixing ratio
+    call physics_state_copy(state, state_loc)
+    call set_wet_to_dry(state_loc, convert_cnst_type='wet')
+    call outfld('QDRY', state_loc%q(:,:,1), pcols, lchnk)
 
     !
     ! Add height of surface to midpoint height above surface
