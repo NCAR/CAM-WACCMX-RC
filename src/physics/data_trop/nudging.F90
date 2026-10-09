@@ -311,19 +311,16 @@ module nudging
   private :: nudging_set_PSprofile
   private :: nudging_set_Vwindow
   public  :: nudging_final
-<<<<<<< data_trop
   public  :: get_nudging_target
   private :: get_nudging_target_2D
   private :: get_nudging_target_3D
+  private :: calc_DryStaticEnergy
+  private :: interp_Bwin
 
   interface get_nudging_target
     module procedure get_nudging_target_2D
     module procedure get_nudging_target_3D
   end interface get_nudging_target
-=======
-  private :: calc_DryStaticEnergy
-  private :: interp_Bwin
->>>>>>> cam6_4_203
 
   ! Nudging Parameters
   !--------------------
@@ -784,12 +781,9 @@ contains
    use cam_history   ,only: addfld,horiz_only
    use shr_const_mod ,only: SHR_CONST_PI
    use filenames     ,only: interpret_filename_spec
-<<<<<<< data_trop
    use cam_pio_utils ,only: cam_pio_openfile
    use pio           ,only: file_desc_t,pio_closefile,pio_inq_dimid,pio_inq_dimlen
-=======
    use netcdf
->>>>>>> cam6_4_203
 
    ! Local values
    !----------------
@@ -1573,24 +1567,15 @@ contains
    !                 arrays when necessary. Toggle the Nudging flag
    !                 when the time is withing the nudging window.
    !===============================================================
-<<<<<<< data_trop
-   use physconst    ,only: cpair
-   use physics_types,only: physics_state
-   use constituents ,only: cnst_get_ind
-   use dycore       ,only: dycore_is
-   use phys_grid    ,only: get_ncols_p
-   use ppgrid       ,only: pver,pcols,begchunk,endchunk
-   use filenames    ,only: interpret_filename_spec
-=======
    use hycoef        ,only: hyai, hybi, ps0, hyam, hybm
    use error_messages,only: alloc_err
    use physconst     ,only: cpair
    use physics_types ,only: physics_state
    use constituents  ,only: cnst_get_ind
    use dycore        ,only: dycore_is
+   use phys_grid     ,only: get_ncols_p
    use ppgrid        ,only: pver,pverp,pcols,begchunk,endchunk
    use filenames     ,only: interpret_filename_spec
->>>>>>> cam6_4_203
    use ESMF
    use mo_util      ,only: rebin
 !+++arh -- ps0 needed to build the obs dry-eta coordinate from hyaiob/hybiob;
@@ -2098,27 +2083,6 @@ contains
        call endrun('nudging_timestep_init:: ERROR unknown Nudging_Force_Opt')
      endif
 
-<<<<<<< data_trop
-     ! Now load Dry Static Energy values for Target
-     !---------------------------------------------
-     if(Nudge_TSmode == 0) then
-       ! DSE tendencies from Temperature only
-       !---------------------------------------
-       do lchnk=begchunk,endchunk
-         ncol=phys_state(lchnk)%ncol
-!         Target_S(:ncol,:pver,lchnk)=cpair*Target_T(:ncol,:pver,lchnk)
-         Target_S(:ncol,:pver,lchnk)=cpair*Target_T(:ncol,:pver,lchnk)
-       end do
-     elseif(Nudge_TSmode == 1) then
-       ! Caluculate DSE tendencies from Temperature, Water Vapor, and Surface Pressure
-       !------------------------------------------------------------------------------
-       do lchnk=begchunk,endchunk
-         ncol=phys_state(lchnk)%ncol
-         call calc_DryStaticEnergy(Target_T(:,:,lchnk), Target_Q(:,:,lchnk), &
-                                 phys_state(lchnk)%phis, Target_PS(:,lchnk), &
-                                                  Target_S(:,:,lchnk), ncol)
-       end do
-=======
      ! Set the Target_S() values used for Temperature nudging
      !--------------------------------------------------------
      if(Nudge_PSprof.ne.0) then
@@ -2198,7 +2162,6 @@ contains
                                                     Target_S(:,:,lchnk), ncol)
          end do
        endif
->>>>>>> cam6_4_203
      endif
 
      ! Set Tscale for the specified Forcing Option
@@ -2436,22 +2399,16 @@ contains
               1,pcols,1,pverob,begchunk,endchunk,Tmp3D, &
               VARflag,gridname='physgrid',timelevel=1 )
    if(VARflag) then
-<<<<<<< data_trop
-! The following would not work, because Tmp3D has vertical dimension of pverob, while Zonal_Bamp3d has pver
+! Zonal/spectral filtering of the obs is disabled: Tmp3D has vertical dimension pverob,
+! while Zonal_Bamp3d and Spectral_Bamp3d have pver
 !     if(Nudge_ZonalFilter) then
 !       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
 !       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
 !     endif
-=======
-     if(Nudge_ZonalFilter) then
-       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
-       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
-     endif
-     if(Nudge_SpectralFilter) then
-       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
-       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
-     endif
->>>>>>> cam6_4_203
+!     if(Nudge_SpectralFilter) then
+!       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
+!       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
+!     endif
      Nobs_U(:,:,begchunk:endchunk,Nudge_ObsInd(1)) = Tmp3D(:,:,begchunk:endchunk)
    else
      call endrun('Variable "U" is missing in '//trim(anal_file))
@@ -2461,21 +2418,14 @@ contains
               1,pcols,1,pverob,begchunk,endchunk,Tmp3D, &
               VARflag,gridname='physgrid',timelevel=1 )
    if(VARflag) then
-<<<<<<< data_trop
 !     if(Nudge_ZonalFilter) then
 !       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
 !       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
 !     endif
-=======
-     if(Nudge_ZonalFilter) then
-       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
-       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
-     endif
-     if(Nudge_SpectralFilter) then
-       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
-       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
-     endif
->>>>>>> cam6_4_203
+!     if(Nudge_SpectralFilter) then
+!       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
+!       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
+!     endif
      Nobs_V(:,:,begchunk:endchunk,Nudge_ObsInd(1)) = Tmp3D(:,:,begchunk:endchunk)
    else
      call endrun('Variable "V" is missing in '//trim(anal_file))
@@ -2485,21 +2435,14 @@ contains
               1,pcols,1,pverob,begchunk,endchunk,Tmp3D, &
               VARflag,gridname='physgrid',timelevel=1 )
    if(VARflag) then
-<<<<<<< data_trop
 !     if(Nudge_ZonalFilter) then
 !       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
 !       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
 !     endif
-=======
-     if(Nudge_ZonalFilter) then
-       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
-       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
-     endif
-     if(Nudge_SpectralFilter) then
-       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
-       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
-     endif
->>>>>>> cam6_4_203
+!     if(Nudge_SpectralFilter) then
+!       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
+!       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
+!     endif
      Nobs_T(:,:,begchunk:endchunk,Nudge_ObsInd(1)) = Tmp3D(:,:,begchunk:endchunk)
    else
      call endrun('Variable "T" is missing in '//trim(anal_file))
@@ -2512,21 +2455,14 @@ contains
               1,pcols,1,pverob,begchunk,endchunk,Tmp3D, &
               VARflag,gridname='physgrid',timelevel=1 )
    if(VARflag) then
-<<<<<<< data_trop
 !     if(Nudge_ZonalFilter) then
 !       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
 !       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
 !     endif
-=======
-     if(Nudge_ZonalFilter) then
-       call ZM%calc_amps(Tmp3D,Zonal_Bamp3d)
-       call ZM%eval_grid(Zonal_Bamp3d,Tmp3D)
-     endif
-     if(Nudge_SpectralFilter) then
-       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
-       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
-     endif
->>>>>>> cam6_4_203
+!     if(Nudge_SpectralFilter) then
+!       call SH%calc_amps(Tmp3D,Spectral_Bamp3d)
+!       call SH%eval_grid(Spectral_Bamp3d,Tmp3D)
+!     endif
      Nobs_Q(:,:,begchunk:endchunk,Nudge_ObsInd(1)) = Tmp3D(:,:,begchunk:endchunk)
    else
      call endrun('Variable "QDRY" is missing in '//trim(anal_file))
@@ -3038,7 +2974,6 @@ contains
 
 
   !================================================================
-<<<<<<< data_trop
   subroutine get_nudging_target_2D(VARNAME,Target_Data)
     !
     ! get_nudging_target_2D: Return Nudging 2D Target values for the given variable. 
@@ -3145,7 +3080,10 @@ contains
     ! End Routine
     !------------
   end subroutine get_nudging_target_3D
-=======
+  !================================================================
+
+
+  !================================================================
   real(r8) function interp_Bwin(rlon,rlat,B_lon,B_lat,Bwindow,nlon,nlat)
    !
    ! interp_Bwin: for the given lat and lon return the interpolated
@@ -3248,7 +3186,6 @@ contains
    !------------
    return
   end function ! interp_Bwin
->>>>>>> cam6_4_203
   !================================================================
 
 end module nudging
