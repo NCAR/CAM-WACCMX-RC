@@ -537,6 +537,14 @@
        Default: 'BoundaryWindowFile.nc'
        </entry>
 
+<entry id="Nudge_ktr" type="integer" category="nudging"
+       group="nudging_nl" valid_values="" >
+       data_trop physics only. Level index (counted from the model top) separating
+       nudging (levels 1:Nudge_ktr) from replacement by the target data
+       (levels Nudge_ktr+1:pver).
+       Default: 88
+       </entry>
+
 <entry id="Nudge_ZonalFilter" type="logical" category="nudging"
        group="nudging_nl" valid_values="" >
        Switch to turn on zonal mean filtering nudging.  If TRUE, the nudging scheme
