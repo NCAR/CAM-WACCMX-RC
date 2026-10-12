@@ -341,6 +341,7 @@ module nudging
   real(r8)          :: Nudge_PScoef
   real(r8)          :: Nudge_PSscal
   integer           :: Nudge_PSprof
+  integer           :: Nudge_ktr
   integer           :: Nudge_Beg_Year ,Nudge_Beg_Month
   integer           :: Nudge_Beg_Day  ,Nudge_Beg_Sec
   integer           :: Nudge_End_Year ,Nudge_End_Month
@@ -499,6 +500,9 @@ contains
    ! For Zonal Mean Filtering
    namelist /nudging_nl/ Nudge_ZonalFilter, Nudge_ZonalNbasis
 
+   ! For data_trop
+   namelist /nudging_nl/ Nudge_ktr
+
    ! Nudging is NOT initialized yet, For now
    ! Nudging will always begin/end at midnight.
    !--------------------------------------------
@@ -528,6 +532,7 @@ contains
    Nudge_PScoef        = 0._r8
    Nudge_PSscal        = 0._r8
    Nudge_PSprof        = 0
+   Nudge_ktr           = 88
    Nudge_Beg_Year      = 2008
    Nudge_Beg_Month     = 5
    Nudge_Beg_Day       = 1
@@ -654,6 +659,11 @@ contains
      call endrun('nudging_readnl:: ERROR in namelist')
    endif
 
+   if((Nudge_Model).and.((Nudge_ktr < 0).or.(Nudge_ktr > pver))) then
+     write(iulog,*) 'NUDGING: Nudge_ktr must be in [0,pver]: Nudge_ktr=',Nudge_ktr
+     call endrun('nudging_readnl:: ERROR in namelist')
+   endif
+
    ! Broadcast namelist variables
    !------------------------------
    call MPI_bcast(Nudge_Path         , len(Nudge_Path),                       &
@@ -700,6 +710,8 @@ contains
    if (ierr /= mpi_success) call endrun(prefix//'FATAL: mpi_bcast: Nudge_Qprof')
    call MPI_bcast(Nudge_PSprof       , 1, mpi_integer, mstrid, mpicom, ierr)
    if (ierr /= mpi_success) call endrun(prefix//'FATAL: mpi_bcast: Nudge_PSprof')
+   call MPI_bcast(Nudge_ktr          , 1, mpi_integer, mstrid, mpicom, ierr)
+   if (ierr /= mpi_success) call endrun(prefix//'FATAL: mpi_bcast: Nudge_ktr')
    call MPI_bcast(Nudge_Beg_Year     , 1, mpi_integer, mstrid, mpicom, ierr)
    if (ierr /= mpi_success) call endrun(prefix//'FATAL: mpi_bcast: Nudge_Beg_Year')
    call MPI_bcast(Nudge_Beg_Month    , 1, mpi_integer, mstrid, mpicom, ierr)
@@ -1066,6 +1078,7 @@ contains
      write(iulog,*) 'NUDGING: Nudge_Qprof  =',Nudge_Qprof
      write(iulog,*) 'NUDGING: Nudge_Tprof  =',Nudge_Tprof
      write(iulog,*) 'NUDGING: Nudge_PSprof =',Nudge_PSprof
+     write(iulog,*) 'NUDGING: Nudge_ktr    =',Nudge_ktr
      write(iulog,*) 'NUDGING: Nudge_Beg_Year =',Nudge_Beg_Year
      write(iulog,*) 'NUDGING: Nudge_Beg_Month=',Nudge_Beg_Month
      write(iulog,*) 'NUDGING: Nudge_Beg_Day  =',Nudge_Beg_Day
@@ -1594,8 +1607,6 @@ contains
    logical :: Update_Model,Update_Nudge,Sync_Error
    logical :: After_Beg   ,Before_End
    integer :: lchnk,ncol,indw,icol
-!   integer, parameter :: ktr = 49       ! vertical level below which use total replacement rather than nudging (For nlev=70)
-   integer, parameter :: ktr = 88        ! vertical level below which use total replacement rather than nudging (For nlev=130)
 
    type(ESMF_Time)         :: Date1,Date2
    type(ESMF_TimeInterval) :: DateDiff
@@ -2066,16 +2077,16 @@ contains
                                             +Tfrac *Nobs_rad_lwup(:ncol,lchnk,Nudge_ObsInd(2))
        end do
 
-       ! Total replacement of T, U, V, Q at lower levels (ktr+1:pver).
+       ! Total replacement of T, U, V, Q at lower levels (Nudge_ktr+1:pver).
        ! PS is intentionally excluded: setting phys_state%ps without
        ! recomputing pint/pmid/pdel/lnpint corrupts the pressure arrays
        ! used by subsequent physics (e.g. gravity wave drag).
        do lchnk=begchunk,endchunk
           ncol=phys_state(lchnk)%ncol
-          phys_state(lchnk)%u(:ncol,ktr+1:pver) = Target_U(:ncol,ktr+1:pver,lchnk)
-          phys_state(lchnk)%v(:ncol,ktr+1:pver) = Target_V(:ncol,ktr+1:pver,lchnk)
-          phys_state(lchnk)%t(:ncol,ktr+1:pver) = Target_T(:ncol,ktr+1:pver,lchnk)
-          phys_state(lchnk)%q(:ncol,ktr+1:pver,indw) = Target_Q(:ncol,ktr+1:pver,lchnk)
+          phys_state(lchnk)%u(:ncol,Nudge_ktr+1:pver) = Target_U(:ncol,Nudge_ktr+1:pver,lchnk)
+          phys_state(lchnk)%v(:ncol,Nudge_ktr+1:pver) = Target_V(:ncol,Nudge_ktr+1:pver,lchnk)
+          phys_state(lchnk)%t(:ncol,Nudge_ktr+1:pver) = Target_T(:ncol,Nudge_ktr+1:pver,lchnk)
+          phys_state(lchnk)%q(:ncol,Nudge_ktr+1:pver,indw) = Target_Q(:ncol,Nudge_ktr+1:pver,lchnk)
        end do
 
      else
@@ -2199,25 +2210,25 @@ contains
 !       Nudge_PSstep(:ncol,     lchnk)=(  Target_PS(:ncol,lchnk)      &
 !                                         -Model_PS(:ncol,lchnk))     &
 !                                      *Tscale*Nudge_PStau(:ncol,lchnk)
-       Nudge_Ustep(:ncol,:ktr,lchnk)=(  Target_U(:ncol,:ktr,lchnk)      &
-                                         -Model_U(:ncol,:ktr,lchnk))     &
-                                      *Tscale*Nudge_Utau(:ncol,:ktr,lchnk)
-       Nudge_Vstep(:ncol,:ktr,lchnk)=(  Target_V(:ncol,:ktr,lchnk)      &
-                                         -Model_V(:ncol,:ktr,lchnk))     &
-                                      *Tscale*Nudge_Vtau(:ncol,:ktr,lchnk)
-       Nudge_Sstep(:ncol,:ktr,lchnk)=(  Target_S(:ncol,:ktr,lchnk)      &
-                                         -Model_S(:ncol,:ktr,lchnk))     &
-                                      *Tscale*Nudge_Stau(:ncol,:ktr,lchnk)
-       Nudge_Qstep(:ncol,:ktr,lchnk)=(  Target_Q(:ncol,:ktr,lchnk)      &
-                                         -Model_Q(:ncol,:ktr,lchnk))     &
-                                      *Tscale*Nudge_Qtau(:ncol,:ktr,lchnk)
+       Nudge_Ustep(:ncol,:Nudge_ktr,lchnk)=(  Target_U(:ncol,:Nudge_ktr,lchnk)      &
+                                         -Model_U(:ncol,:Nudge_ktr,lchnk))     &
+                                      *Tscale*Nudge_Utau(:ncol,:Nudge_ktr,lchnk)
+       Nudge_Vstep(:ncol,:Nudge_ktr,lchnk)=(  Target_V(:ncol,:Nudge_ktr,lchnk)      &
+                                         -Model_V(:ncol,:Nudge_ktr,lchnk))     &
+                                      *Tscale*Nudge_Vtau(:ncol,:Nudge_ktr,lchnk)
+       Nudge_Sstep(:ncol,:Nudge_ktr,lchnk)=(  Target_S(:ncol,:Nudge_ktr,lchnk)      &
+                                         -Model_S(:ncol,:Nudge_ktr,lchnk))     &
+                                      *Tscale*Nudge_Stau(:ncol,:Nudge_ktr,lchnk)
+       Nudge_Qstep(:ncol,:Nudge_ktr,lchnk)=(  Target_Q(:ncol,:Nudge_ktr,lchnk)      &
+                                         -Model_Q(:ncol,:Nudge_ktr,lchnk))     &
+                                      *Tscale*Nudge_Qtau(:ncol,:Nudge_ktr,lchnk)
 !       Nudge_PSstep(:ncol,     lchnk)=(  Target_PS(:ncol,lchnk)      &
 !                                         -Model_PS(:ncol,lchnk))     &
 !                                      *Tscale*Nudge_PStau(:ncol,lchnk)
-       Nudge_Ustep(:ncol,ktr+1:pver,lchnk) = 0._r8
-       Nudge_Vstep(:ncol,ktr+1:pver,lchnk) = 0._r8
-       Nudge_Sstep(:ncol,ktr+1:pver,lchnk) = 0._r8
-       Nudge_Qstep(:ncol,ktr+1:pver,lchnk) = 0._r8
+       Nudge_Ustep(:ncol,Nudge_ktr+1:pver,lchnk) = 0._r8
+       Nudge_Vstep(:ncol,Nudge_ktr+1:pver,lchnk) = 0._r8
+       Nudge_Sstep(:ncol,Nudge_ktr+1:pver,lchnk) = 0._r8
+       Nudge_Qstep(:ncol,Nudge_ktr+1:pver,lchnk) = 0._r8
        Nudge_PSstep(:ncol,     lchnk)      = 0._r8
 
     end do
