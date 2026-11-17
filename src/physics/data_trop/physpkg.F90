@@ -1511,7 +1511,8 @@ contains
     use cam_history,        only: hist_fld_active, outfld
     use qneg_module,        only: qneg4
     use co2_cycle,          only: co2_cycle_set_ptend
-    use nudging,            only: Nudge_Model,Nudge_ON,nudging_timestep_tend
+!+++arh -- data replacement applied as a physics tendency (phase 2, below)
+    use nudging,            only: Nudge_Model,Nudge_ON,nudging_timestep_tend,nudging_replace_tend
     use cam_snapshot,       only: cam_snapshot_all_outfld_tphysac
     use cam_snapshot_common,only: cam_snapshot_ptend_outfld
     use lunar_tides,        only: lunar_tides_tend
@@ -2591,6 +2592,18 @@ contains
       end if
       call physics_update(state,ptend,ztodt,tend)
       call check_energy_cam_chng(state, tend, "nudging", nstep, ztodt, zero, zero, zero, zero)
+
+!+++arh -- phase 2 of the data replacement (see nudging_replace_tend): on
+!          levels Nudge_ktr+1:pver the ptend returned here equals
+!          (Target - X0)/dt minus everything accumulated in tend so far, so
+!          after this physics_update tend holds exactly the replacement
+!          tendency there (what p_d_coupling passes to the dynamical core)
+!          and the state equals the target (what the core reads for water
+!          vapour). Must stay after the nudging update above and before the
+!          teout save below so that the energy fixer sees only the dynamics.
+      call nudging_replace_tend(state,tend,ptend,ztodt)
+      call physics_update(state,ptend,ztodt,tend)
+      call check_energy_cam_chng(state, tend, "ndg_replace", nstep, ztodt, zero, zero, zero, zero)
     endif
 
     !-------------- Energy budget checks vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
