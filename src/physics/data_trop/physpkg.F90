@@ -776,7 +776,8 @@ contains
     use cam_abortutils,     only: endrun
     use nudging,            only: Nudge_Model, nudging_init
     use cam_snapshot,       only: cam_snapshot_init
-    use cam_history,        only: addfld, register_vector_field, add_default
+!+++arh -- horiz_only needed for the dycore-state surface pressure field (PS0)
+    use cam_history,        only: addfld, register_vector_field, add_default, horiz_only
     use cam_budget,         only: cam_budget_init
     use phys_grid_ctem,     only: phys_grid_ctem_init
     use surface_emissions_mod, only: surface_emissions_init
@@ -995,6 +996,21 @@ contains
 
     ! Initialize the budget capability
     call cam_budget_init()
+
+!+++arh -- dynamical-core state as handed over by d_p_coupling at the top of the
+!          step, written in phys_timestep_init just before nudging_timestep_init
+!          (i.e. before the nudging/data-replacement code sees it). The standard
+!          history state (T, U, V, ...) is written at the end of tphysac, so the
+!          two together bracket one physics step. Z30 is the geopotential
+!          height of that state: state%zm is computed from the dycore state in
+!          d_p_coupling (derived_phys), so no extra calculation is needed.
+!          Instantaneous quantities; use an 'I' tape.
+    call addfld ( 'T0',  (/ 'lev' /), 'I', 'K',     'Dycore T at top of step (before nudging/replacement)')
+    call addfld ( 'U0',  (/ 'lev' /), 'I', 'm/s',   'Dycore U at top of step (before nudging/replacement)')
+    call addfld ( 'V0',  (/ 'lev' /), 'I', 'm/s',   'Dycore V at top of step (before nudging/replacement)')
+    call addfld ( 'Q0',  (/ 'lev' /), 'I', 'kg/kg', 'Dycore Q at top of step (before nudging/replacement)')
+    call addfld ( 'Z30', (/ 'lev' /), 'I', 'm',     'Dycore geopotential height at top of step (above sea level)')
+    call addfld ( 'PS0', horiz_only,  'I', 'Pa',    'Dycore PS at top of step (before nudging/replacement)')
 
     ! addfld calls for U, V tendency budget variables that are output in
     ! tphysac, tphysbc
@@ -1511,7 +1527,8 @@ contains
     use cam_history,        only: hist_fld_active, outfld
     use qneg_module,        only: qneg4
     use co2_cycle,          only: co2_cycle_set_ptend
-    use nudging,            only: Nudge_Model,Nudge_ON,nudging_timestep_tend
+!+++arh -- data replacement applied as a physics tendency (phase 2, below)
+    use nudging,            only: Nudge_Model,Nudge_ON,nudging_timestep_tend,nudging_replace_tend
     use cam_snapshot,       only: cam_snapshot_all_outfld_tphysac
     use cam_snapshot_common,only: cam_snapshot_ptend_outfld
     use lunar_tides,        only: lunar_tides_tend
@@ -1792,7 +1809,7 @@ contains
     ! Apply tracer surface fluxes to lowest model layer
     !===================================================
     call t_startf('clubb_emissions_tend')
-!+++arh -- don't think this does anything for -nochem
+
     call clubb_emissions_cam(state, cam_in, ptend)
 
     call physics_update(state, ptend, ztodt, tend)
@@ -2166,26 +2183,14 @@ contains
     call t_stopf('aerosol_wet_processes')
 
 
-    !===================================================
-    ! Moist physical parameteriztions complete:
-    ! send dynamical variables, and derived variables to history file
-    !===================================================
-
-    call t_startf('bc_history_write')
-    call diag_phys_writeout(state, pbuf)
-    call diag_conv(state, ztodt, pbuf)
-
-    call t_stopf('bc_history_write')
-
-    !===================================================
-    ! Write cloud diagnostics on history file
-    !===================================================
-
-    call t_startf('bc_cld_diag_history_write')
-
-    call cloud_diagnostics_calc(state, pbuf)
-
-    call t_stopf('bc_cld_diag_history_write')
+!+++arh -- the history write of the state and derived variables
+!          (diag_phys_writeout, diag_conv) and of the cloud diagnostics
+!          (cloud_diagnostics_calc) that used to sit here, after the moist
+!          physics and before radiation, has been moved to the end of tphysac,
+!          after the nudging and data-replacement updates, so that the written
+!          T, U, V, Q, PS, Z3 are the end-of-physics state handed to the
+!          dynamical core (the target on the replaced levels). See the block
+!          preceding the "Energy budget checks" section.
 
     !===================================================
     ! Radiation computations
@@ -2591,7 +2596,49 @@ contains
       end if
       call physics_update(state,ptend,ztodt,tend)
       call check_energy_cam_chng(state, tend, "nudging", nstep, ztodt, zero, zero, zero, zero)
+
+!+++arh -- phase 2 of the data replacement (see nudging_replace_tend): on
+!          levels Nudge_ktr+1:pver the ptend returned here equals
+!          (Target - X0)/dt minus everything accumulated in tend so far, so
+!          after this physics_update tend holds exactly the replacement
+!          tendency there (what p_d_coupling passes to the dynamical core)
+!          and the state equals the target (what the core reads for water
+!          vapour). Must stay after the nudging update above and before the
+!          teout save below so that the energy fixer sees only the dynamics.
+      call nudging_replace_tend(state,tend,ptend,ztodt)
+      call physics_update(state,ptend,ztodt,tend)
+      call check_energy_cam_chng(state, tend, "ndg_replace", nstep, ztodt, zero, zero, zero, zero)
     endif
+
+!+++arh -- history write of the state and derived variables, moved here from
+!          its original place after the moist physics (see the comment there).
+!          At this point every parameterization, the nudging and the data
+!          replacement have acted, so the written T, U, V, Q, PS, Z3 are the
+!          end-of-physics state: on the replaced levels exactly the target.
+!          It must stay before the teout save and the two blocks after it,
+!          which temporarily modify state%q/pdel/ps (thermo_budget_history) and
+!          rescale state%T by cpairv/cp_or_cv_dycore. PTTEND etc. are written
+!          later by diag_phys_tend_writeout and carry that rescaling.
+    !===================================================
+    ! Physics, nudging and data replacement complete:
+    ! send dynamical variables, and derived variables to history file
+    !===================================================
+
+    call t_startf('bc_history_write')
+    call diag_phys_writeout(state, pbuf)
+    call diag_conv(state, ztodt, pbuf)
+
+    call t_stopf('bc_history_write')
+
+    !===================================================
+    ! Write cloud diagnostics on history file
+    !===================================================
+
+    call t_startf('bc_cld_diag_history_write')
+
+    call cloud_diagnostics_calc(state, pbuf)
+
+    call t_stopf('bc_cld_diag_history_write')
 
     !-------------- Energy budget checks vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
     ! Save total energy for global fixer in next timestep
@@ -3216,6 +3263,10 @@ subroutine phys_timestep_init(phys_state, cam_in, cam_out, pbuf2d)
   use epp_ionization,      only: epp_ionization_active
   use iop_forcing,         only: scam_use_iop_srf
   use nudging,             only: Nudge_Model, nudging_timestep_init
+!+++arh -- output of the dycore state at the top of the step (see below)
+  use cam_history,         only: outfld
+  use constituents,        only: cnst_get_ind
+  use physconst,           only: gravit
   use waccmx_phys_intr,    only: waccmx_phys_ion_elec_temp_timestep_init
   use phys_grid_ctem,      only: phys_grid_ctem_diags
   use surface_emissions_mod,only: surface_emissions_adv
@@ -3228,6 +3279,9 @@ subroutine phys_timestep_init(phys_state, cam_in, cam_out, pbuf2d)
   type(cam_out_t),     intent(inout), dimension(begchunk:endchunk) :: cam_out
 
   type(physics_buffer_desc), pointer                 :: pbuf2d(:,:)
+!+++arh -- chunk index, Q index and work array for the dycore-state output below
+  integer  :: c, ixq_ts
+  real(r8) :: z3_ts(pcols,pver)
 
   !-----------------------------------------------------------------------------
 
@@ -3284,6 +3338,26 @@ subroutine phys_timestep_init(phys_state, cam_in, cam_out, pbuf2d)
 
   ! age of air tracers
   call aoa_tracers_timestep_init(phys_state)
+
+!+++arh -- write the dynamical-core state as handed over by d_p_coupling, before
+!          nudging_timestep_init. With the tendency form of the data replacement
+!          this is the state X0 from which the replacement tendency
+!          (Target - X0)/dt is built; comparing it with Target_* and with the
+!          end-of-physics history state checks that the dynamical core follows
+!          the target. Z3 is formed exactly as in diag_phys_writeout from
+!          state%zm, which d_p_coupling computed from the dycore state.
+  call cnst_get_ind('Q', ixq_ts)
+  do c = begchunk, endchunk
+    z3_ts(:,:) = 0._r8
+    z3_ts(:phys_state(c)%ncol,:) = phys_state(c)%zm(:phys_state(c)%ncol,:) + &
+                                   spread(phys_state(c)%phis(:phys_state(c)%ncol), 2, pver)/gravit
+    call outfld('T0',  phys_state(c)%t(:,:),        pcols, c)
+    call outfld('U0',  phys_state(c)%u(:,:),        pcols, c)
+    call outfld('V0',  phys_state(c)%v(:,:),        pcols, c)
+    call outfld('Q0',  phys_state(c)%q(:,:,ixq_ts), pcols, c)
+    call outfld('Z30', z3_ts(:,:),                  pcols, c)
+    call outfld('PS0', phys_state(c)%ps(:),         pcols, c)
+  end do
 
   ! Update Nudging values, if needed
   !----------------------------------

@@ -306,6 +306,8 @@ module nudging
   public  :: nudging_init
   public  :: nudging_timestep_init
   public  :: nudging_timestep_tend
+!+++arh -- data replacement applied as a physics tendency (see nudging_replace_tend)
+  public  :: nudging_replace_tend
   private :: nudging_update_analyses
   private :: nudging_set_profile
   private :: nudging_set_PSprofile
@@ -425,6 +427,13 @@ module nudging
   real(r8),allocatable:: Nudge_Sstep (:,:,:)  !(pcols,pver,begchunk:endchunk)
   real(r8),allocatable:: Nudge_Qstep (:,:,:)  !(pcols,pver,begchunk:endchunk)
   real(r8),allocatable:: Nudge_PSstep(:,:)    !(pcols,begchunk:endchunk)
+!+++arh -- state handed over by the dynamical core at the start of the step
+!          (saved every step in nudging_timestep_init, phase 1 of the data
+!          replacement; used by nudging_replace_tend, phase 2).
+  real(r8),allocatable:: Repl_U0     (:,:,:)  !(pcols,pver,begchunk:endchunk)
+  real(r8),allocatable:: Repl_V0     (:,:,:)  !(pcols,pver,begchunk:endchunk)
+  real(r8),allocatable:: Repl_T0     (:,:,:)  !(pcols,pver,begchunk:endchunk)
+  real(r8),allocatable:: Repl_Q0     (:,:,:)  !(pcols,pver,begchunk:endchunk)
 
   ! Nudging Observation Arrays
   !-----------------------------
@@ -864,6 +873,19 @@ contains
    call alloc_err(istat,'nudging_init','Model_S',pcols*pver*((endchunk-begchunk)+1))
    allocate(Model_Q(pcols,pver,begchunk:endchunk),stat=istat)
    call alloc_err(istat,'nudging_init','Model_Q',pcols*pver*((endchunk-begchunk)+1))
+!+++arh -- start-of-step state for the data replacement (see nudging_replace_tend)
+   allocate(Repl_U0(pcols,pver,begchunk:endchunk),stat=istat)
+   call alloc_err(istat,'nudging_init','Repl_U0',pcols*pver*((endchunk-begchunk)+1))
+   allocate(Repl_V0(pcols,pver,begchunk:endchunk),stat=istat)
+   call alloc_err(istat,'nudging_init','Repl_V0',pcols*pver*((endchunk-begchunk)+1))
+   allocate(Repl_T0(pcols,pver,begchunk:endchunk),stat=istat)
+   call alloc_err(istat,'nudging_init','Repl_T0',pcols*pver*((endchunk-begchunk)+1))
+   allocate(Repl_Q0(pcols,pver,begchunk:endchunk),stat=istat)
+   call alloc_err(istat,'nudging_init','Repl_Q0',pcols*pver*((endchunk-begchunk)+1))
+   Repl_U0=0._r8
+   Repl_V0=0._r8
+   Repl_T0=0._r8
+   Repl_Q0=0._r8
    allocate(Model_PS(pcols,begchunk:endchunk),stat=istat)
    call alloc_err(istat,'nudging_init','Model_PS',pcols*((endchunk-begchunk)+1))
    allocate(Model_PSfilt(pcols,begchunk:endchunk),stat=istat)
@@ -907,6 +929,22 @@ contains
    call addfld( 'Nudge_PS',horiz_only,'A','hPa/s'  ,'PS Nudging Tendency')
    call addfld('Target_PS',horiz_only,'A','hPa'    ,'PS Nudging Target'  )
    call addfld( 'Model_PS',horiz_only,'A','hPa'    ,'PS Model Surface P' )
+!+++arh -- diagnostics of the data replacement (levels Nudge_ktr+1:pver, zero above):
+!          Repl_*  = net tendency handed to the dynamical core, (Target - X0)/dt,
+!                    where X0 is the state at the start of the step. In the
+!                    replaced layer PTTEND, UTEND_PHYSTOT and VTEND_PHYSTOT
+!                    must equal Repl_T, Repl_U and Repl_V.
+!          ReplC_* = the part of the stage-2 ptend that cancels the other
+!                    physics tendencies accumulated on those levels, i.e.
+!                    minus (sum of all other physics tendencies there).
+   call addfld( 'Repl_U' ,(/ 'lev' /),'A','m/s/s'  ,'U data-replacement tendency sent to the dycore')
+   call addfld( 'Repl_V' ,(/ 'lev' /),'A','m/s/s'  ,'V data-replacement tendency sent to the dycore')
+   call addfld( 'Repl_T' ,(/ 'lev' /),'A','K/s'    ,'T data-replacement tendency sent to the dycore')
+   call addfld( 'Repl_Q' ,(/ 'lev' /),'A','kg/kg/s','Q data-replacement tendency sent to the dycore')
+   call addfld( 'ReplC_U',(/ 'lev' /),'A','m/s/s'  ,'U physics tendency cancelled in the replaced layer')
+   call addfld( 'ReplC_V',(/ 'lev' /),'A','m/s/s'  ,'V physics tendency cancelled in the replaced layer')
+   call addfld( 'ReplC_T',(/ 'lev' /),'A','K/s'    ,'T physics tendency cancelled in the replaced layer')
+   call addfld( 'ReplC_Q',(/ 'lev' /),'A','kg/kg/s','Q physics tendency cancelled in the replaced layer')
 
    !-----------------------------------------
    ! Values initialized only by masterproc
@@ -2020,6 +2058,24 @@ contains
    ! HERE Implement time dependence of Nudging Coefs HERE
    !-------------------------------------------------------
 
+!+++arh -- phase 1 of the data replacement: remember the state the dynamical
+!          core handed over at the start of this step, before any physics has
+!          acted on it. Nothing is assigned to phys_state here any more; the
+!          replacement itself is applied at the end of tphysac by
+!          nudging_replace_tend as the tendency (Target - X0)/dt, which is
+!          what the dynamical core must receive (CAM-SE's p_d_coupling passes
+!          only the tendencies accumulated by physics_update, plus the tracer
+!          state). Saved every step, independently of the Model_Step clock.
+   if(Nudge_Force_Opt == 1) then
+     call cnst_get_ind('Q',indw)
+     do lchnk=begchunk,endchunk
+       ncol=phys_state(lchnk)%ncol
+       Repl_U0(:ncol,:pver,lchnk)=phys_state(lchnk)%u(:ncol,:pver)
+       Repl_V0(:ncol,:pver,lchnk)=phys_state(lchnk)%v(:ncol,:pver)
+       Repl_T0(:ncol,:pver,lchnk)=phys_state(lchnk)%t(:ncol,:pver)
+       Repl_Q0(:ncol,:pver,lchnk)=phys_state(lchnk)%q(:ncol,:pver,indw)
+     end do
+   endif
 
    !---------------------------------------------------
    ! If Data arrays have changed update stepping arrays
@@ -2077,17 +2133,17 @@ contains
                                             +Tfrac *Nobs_rad_lwup(:ncol,lchnk,Nudge_ObsInd(2))
        end do
 
-       ! Total replacement of T, U, V, Q at lower levels (Nudge_ktr+1:pver).
-       ! PS is intentionally excluded: setting phys_state%ps without
-       ! recomputing pint/pmid/pdel/lnpint corrupts the pressure arrays
-       ! used by subsequent physics (e.g. gravity wave drag).
-       do lchnk=begchunk,endchunk
-          ncol=phys_state(lchnk)%ncol
-          phys_state(lchnk)%u(:ncol,Nudge_ktr+1:pver) = Target_U(:ncol,Nudge_ktr+1:pver,lchnk)
-          phys_state(lchnk)%v(:ncol,Nudge_ktr+1:pver) = Target_V(:ncol,Nudge_ktr+1:pver,lchnk)
-          phys_state(lchnk)%t(:ncol,Nudge_ktr+1:pver) = Target_T(:ncol,Nudge_ktr+1:pver,lchnk)
-          phys_state(lchnk)%q(:ncol,Nudge_ktr+1:pver,indw) = Target_Q(:ncol,Nudge_ktr+1:pver,lchnk)
-       end do
+!+++arh -- the direct replacement of phys_state%u/v/t/q on levels
+!          Nudge_ktr+1:pver that used to be done here only changed what the
+!          parameterizations and the history saw: the dynamical core never
+!          received it (p_d_coupling passes accumulated tendencies, not the
+!          state), and the energy fixer then re-injected the energy
+!          difference between the two states as a uniform heating. The
+!          replacement is now applied at the end of tphysac as a tendency by
+!          nudging_replace_tend; only the Target_* arrays are set here.
+!          PS is still not replaced: setting phys_state%ps without
+!          recomputing pint/pmid/pdel/lnpint would corrupt the pressure
+!          arrays used by subsequent physics (e.g. gravity wave drag).
 
      else
        write(iulog,*) 'NUDGING: Unknown Nudge_Force_Opt=',Nudge_Force_Opt
@@ -2311,6 +2367,113 @@ contains
    !------------
 
   end subroutine nudging_timestep_tend
+  !================================================================
+
+  !================================================================
+!+++arh -- phase 2 of the data replacement (Nudge_Force_Opt=1, levels
+!          Nudge_ktr+1:pver), called once per step at the end of tphysac,
+!          after the nudging update and before the teout save.
+!
+!          The dynamical core applies the tendencies accumulated by
+!          physics_update (tend%dtdt, dudt, dvdt) to the state it handed over
+!          at the start of the step (X0, saved in nudging_timestep_init), and
+!          takes the water vapour from the end-of-physics state. For the core
+!          to land on the target the accumulated tendency on the replaced
+!          levels must be exactly (Target - X0)/dt and the end state must be
+!          the target. Both are obtained with one ptend,
+!             ptend = (Target - X0)/dt - tend_acc        (U, V, T as DSE)
+!             ptend%q = (Target_Q - q)/dt
+!          because physics_update adds ptend to tend_acc and ptend*dt to the
+!          state, and the state has moved by exactly tend_acc*dt since X0.
+!          Every other physics tendency on those levels is thereby cancelled.
+!          Going through physics_update (and check_energy_cam_chng in the
+!          caller) keeps dse, the geopotential and te_cur/teout consistent,
+!          so the energy fixer sees only the dynamics. Levels 1:Nudge_ktr
+!          get zero. PS is not touched.
+  subroutine nudging_replace_tend(phys_state,tend_acc,phys_tend,dtime)
+   use physconst      ,only: cpair
+   use air_composition,only: cpairv
+   use phys_control   ,only: waccmx_is
+   use physics_types  ,only: physics_state,physics_tend,physics_ptend,physics_ptend_init
+   use constituents   ,only: cnst_get_ind,pcnst
+   use ppgrid         ,only: pver,pcols
+   use cam_history    ,only: outfld
+
+   ! Arguments
+   !-------------
+   type(physics_state), intent(in) :: phys_state
+   type(physics_tend ), intent(in) :: tend_acc  ! tendencies accumulated by physics_update so far this step
+   type(physics_ptend), intent(out):: phys_tend
+   real(r8),            intent(in) :: dtime     ! physics timestep (s)
+
+   ! Local values
+   !--------------------
+   integer  :: indw,ncol,lchnk,k
+   logical  :: lq(pcnst)
+   real(r8) :: rdt
+   real(r8) :: cpv(pcols,pver)
+   real(r8) :: net_u(pcols,pver),net_v(pcols,pver),net_t(pcols,pver),net_q(pcols,pver)
+   real(r8) :: cor_u(pcols,pver),cor_v(pcols,pver),cor_t(pcols,pver),cor_q(pcols,pver)
+
+   call cnst_get_ind('Q',indw)
+   lq(:)   =.false.
+   lq(indw)=.true.
+   call physics_ptend_init(phys_tend,phys_state%psetcols,'nudging_replace', &
+                           lu=.true.,lv=.true.,ls=.true.,lq=lq)
+
+   ! Nothing to do outside the nudging window, for relaxation-only
+   ! nudging, or when no level is replaced.
+   !-------------------------------------------------------------
+   if((.not.Nudge_ON).or.(Nudge_Force_Opt /= 1).or.(Nudge_ktr >= pver)) return
+
+   lchnk=phys_state%lchnk
+   ncol =phys_state%ncol
+   rdt  =1._r8/dtime
+
+   ! Heat capacity physics_update uses to turn ptend%s into a temperature
+   ! change (cpairv for WACCM-X, cpair otherwise); tend_acc%dtdt is already
+   ! in K/s.
+   !-----------------------------------------------------------------
+   if(waccmx_is('ionosphere').or.waccmx_is('neutral')) then
+     cpv(:ncol,:pver)=cpairv(:ncol,:pver,lchnk)
+   else
+     cpv(:ncol,:pver)=cpair
+   endif
+
+   net_u=0._r8; net_v=0._r8; net_t=0._r8; net_q=0._r8
+   cor_u=0._r8; cor_v=0._r8; cor_t=0._r8; cor_q=0._r8
+   do k=Nudge_ktr+1,pver
+     ! net tendency the dynamical core must receive on this level
+     net_u(:ncol,k)=(Target_U(:ncol,k,lchnk)-Repl_U0(:ncol,k,lchnk))*rdt
+     net_v(:ncol,k)=(Target_V(:ncol,k,lchnk)-Repl_V0(:ncol,k,lchnk))*rdt
+     net_t(:ncol,k)=(Target_T(:ncol,k,lchnk)-Repl_T0(:ncol,k,lchnk))*rdt
+     net_q(:ncol,k)=(Target_Q(:ncol,k,lchnk)-Repl_Q0(:ncol,k,lchnk))*rdt
+     ! what has to be removed: everything accumulated so far this step
+     cor_u(:ncol,k)=-tend_acc%dudt(:ncol,k)
+     cor_v(:ncol,k)=-tend_acc%dvdt(:ncol,k)
+     cor_t(:ncol,k)=-tend_acc%dtdt(:ncol,k)
+     cor_q(:ncol,k)=(Repl_Q0(:ncol,k,lchnk)-phys_state%q(:ncol,k,indw))*rdt
+     ! ptend = net + correction (for q the state is what the dycore reads,
+     ! so the increment is simply target minus current)
+     phys_tend%u(:ncol,k)     = net_u(:ncol,k)+cor_u(:ncol,k)
+     phys_tend%v(:ncol,k)     = net_v(:ncol,k)+cor_v(:ncol,k)
+     phys_tend%s(:ncol,k)     =(net_t(:ncol,k)+cor_t(:ncol,k))*cpv(:ncol,k)
+     phys_tend%q(:ncol,k,indw)=(Target_Q(:ncol,k,lchnk)-phys_state%q(:ncol,k,indw))*rdt
+   end do
+
+   call outfld( 'Repl_U' ,net_u,pcols,lchnk)
+   call outfld( 'Repl_V' ,net_v,pcols,lchnk)
+   call outfld( 'Repl_T' ,net_t,pcols,lchnk)
+   call outfld( 'Repl_Q' ,net_q,pcols,lchnk)
+   call outfld( 'ReplC_U',cor_u,pcols,lchnk)
+   call outfld( 'ReplC_V',cor_v,pcols,lchnk)
+   call outfld( 'ReplC_T',cor_t,pcols,lchnk)
+   call outfld( 'ReplC_Q',cor_q,pcols,lchnk)
+
+   ! End Routine
+   !------------
+
+  end subroutine nudging_replace_tend
   !================================================================
 
   !================================================================
@@ -2844,6 +3007,11 @@ contains
     if (allocated(Model_T)) deallocate(Model_T)
     if (allocated(Model_S)) deallocate(Model_S)
     if (allocated(Model_Q)) deallocate(Model_Q)
+!+++arh -- start-of-step state for the data replacement
+    if (allocated(Repl_U0)) deallocate(Repl_U0)
+    if (allocated(Repl_V0)) deallocate(Repl_V0)
+    if (allocated(Repl_T0)) deallocate(Repl_T0)
+    if (allocated(Repl_Q0)) deallocate(Repl_Q0)
     if (allocated(Model_PS)) deallocate(Model_PS)
     if (allocated(Model_PSfilt)) deallocate(Model_PSfilt)
     if (allocated(Nudge_Utau)) deallocate(Nudge_Utau)
