@@ -85,6 +85,10 @@ module zm_conv_intr
    integer  ::    nevapr_dpcu_idx  = 0
    integer  ::    dgnum_idx        = 0
 
+   ! ZM "core" (before precip evap and momentum transport) q and t tendencies
+   integer  ::    ttend_dp_core_idx = -1
+   integer  ::    qtend_dp_core_idx = -1
+
    integer :: nmodes
    integer :: nbulk
 
@@ -356,6 +360,9 @@ subroutine zm_conv_init(pref_edge)
     cld_idx         = pbuf_get_index('CLD')
     fracis_idx      = pbuf_get_index('FRACIS')
 
+    ttend_dp_core_idx = pbuf_get_index('TTEND_DP_CORE', errcode=errflg)
+    qtend_dp_core_idx = pbuf_get_index('QTEND_DP_CORE', errcode=errflg)
+
 end subroutine zm_conv_init
 !=========================================================================================
 !subroutine zm_conv_tend(state, ptend, tdt)
@@ -374,7 +381,7 @@ subroutine zm_conv_tend(pblh    ,mcon    ,cme     , &
    use physics_types, only: physics_ptend_sum, physics_ptend_dealloc
 
    use time_manager,  only: get_nstep, is_first_step
-   use physics_buffer, only : pbuf_get_field, physics_buffer_desc, pbuf_old_tim_idx
+   use physics_buffer, only : pbuf_get_field, physics_buffer_desc
    use constituents,  only: pcnst, cnst_get_ind, cnst_is_convtran1
    use physconst,     only: gravit, latice, latvap, tmelt, cpwv, cpliq, rh2o
    use phys_grid,     only: get_rlat_all_p, get_rlon_all_p
@@ -411,7 +418,6 @@ subroutine zm_conv_tend(pblh    ,mcon    ,cme     , &
    integer :: ixcldice, ixcldliq      ! constituent indices for cloud liquid and ice water.
    integer :: lchnk                   ! chunk identifier
    integer :: ncol                    ! number of atmospheric columns
-   integer :: itim_old                ! for physics buffer fields
 
    real(r8) :: ftem(pcols,pver)              ! Temporary workspace for outfld variables
    real(r8) :: ntprprd(pcols,pver)    ! evap outfld: net precip production in layer
@@ -438,6 +444,8 @@ subroutine zm_conv_tend(pblh    ,mcon    ,cme     , &
    real(r8), pointer :: lambdadpcu(:,:) ! slope of cloud liquid size distr
    real(r8), pointer :: mudpcu(:,:)     ! width parameter of droplet size distr
    real(r8), pointer :: mconzm(:,:)     !convective mass fluxes
+   real(r8), pointer :: ttend_dp_core(:,:)  ! core ZM temperature tendency, for MCSP [K/s]
+   real(r8), pointer :: qtend_dp_core(:,:)  ! core ZM water vapor tendency, for MCSP [kg/kg/s]
 
    real(r8), pointer :: mu(:,:)    ! (pcols,pver)
    real(r8), pointer :: eu(:,:)    ! (pcols,pver)
@@ -505,8 +513,7 @@ subroutine zm_conv_tend(pblh    ,mcon    ,cme     , &
 !
 ! Associate pointers with physics buffer fields
 !
-   itim_old = pbuf_old_tim_idx()
-   call pbuf_get_field(pbuf, cld_idx,         cld,    start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+   call pbuf_get_field(pbuf, cld_idx,         cld )
 
    call pbuf_get_field(pbuf, icwmrdp_idx,     ql )
    call pbuf_get_field(pbuf, rprddp_idx,      rprd )
@@ -584,6 +591,16 @@ subroutine zm_conv_tend(pblh    ,mcon    ,cme     , &
       jctop(ideep(i)) = real(jt(i), r8)
       jcbot(ideep(i)) = real(maxg(i), r8)
    end do
+
+   ! Before convective evaporation export ZM q and t tendencies when needed:
+   if (ttend_dp_core_idx > 0) then
+      call pbuf_get_field(pbuf, ttend_dp_core_idx, ttend_dp_core)
+      ttend_dp_core(:ncol,:pver) = ptend_loc%s(:ncol,:pver)/cpair
+   end if
+   if (qtend_dp_core_idx > 0) then
+      call pbuf_get_field(pbuf, qtend_dp_core_idx, qtend_dp_core)
+      qtend_dp_core(:ncol,:pver) = ptend_loc%q(:ncol,:pver,1)
+   end if
 
    call outfld('CAPE', cape, pcols, lchnk)        ! RBN - CAPE output
 !

@@ -34,13 +34,16 @@ module physpkg
 
   use phys_control,    only: use_hemco            ! Use Harmonized Emissions Component (HEMCO)
 
-  use modal_aero_calcsize,    only: modal_aero_calcsize_init, modal_aero_calcsize_diag, modal_aero_calcsize_reg
-  use modal_aero_calcsize,    only: modal_aero_calcsize_sub
-  use modal_aero_wateruptake, only: modal_aero_wateruptake_init, modal_aero_wateruptake_dr, modal_aero_wateruptake_reg
+  use modal_aero_calcsize_cam, only: modal_aero_calcsize_init, modal_aero_calcsize_diag, modal_aero_calcsize_reg
+  use modal_aero_calcsize_cam, only: modal_aero_calcsize_sub
+  use modal_aero_wateruptake_cam, only: modal_aero_wateruptake_cam_init, modal_aero_wateruptake_dr, modal_aero_wateruptake_reg
 
   use carma_diags_mod, only: carma_diags_t
 
   use offline_driver,  only: offline_driver_dorun
+
+! clubb_mf dependency removed: CLUBB-MF is only supported with cam7
+! physics (enforced in bld/build-namelist)
 
   implicit none
   private
@@ -115,7 +118,7 @@ contains
     !
     !-----------------------------------------------------------------------
     use cam_abortutils,     only: endrun
-    use physics_buffer,     only: pbuf_init_time, pbuf_cam_snapshot_register
+    use physics_buffer,     only: pbuf_cam_snapshot_register
     use physics_buffer,     only: pbuf_add_field, dtype_r8, pbuf_register_subcol
     use shr_kind_mod,       only: r8 => shr_kind_r8
     use constituents,       only: pcnst, cnst_add, cnst_chk_dim
@@ -137,6 +140,7 @@ contains
     use ghg_data,           only: ghg_data_register
     use vertical_diffusion, only: vd_register
     use convect_deep,       only: convect_deep_register
+    use mcsp_cam,           only: mcsp_cam_register
     use convect_shallow,    only: convect_shallow_register
     use radiation,          only: radiation_register
     use co2_cycle,          only: co2_register
@@ -188,9 +192,6 @@ contains
                       cam_snapshot_after_num_out  = cam_snapshot_after_num)
 
     subcol_scheme = subcol_get_scheme()
-
-    ! Initialize dyn_time_lvls
-    call pbuf_init_time()
 
     ! Register the subcol scheme
     call subcol_register()
@@ -311,6 +312,9 @@ contains
        ! deep convection
        call convect_deep_register
 
+       ! MCSP (mesoscale coherent structure parameterization)
+       call mcsp_cam_register()
+
        !  shallow convection
        call convect_shallow_register
 
@@ -373,7 +377,7 @@ contains
   subroutine phys_inidat( cam_out, pbuf2d )
     use cam_abortutils,      only: endrun
 
-    use physics_buffer,      only: pbuf_get_index, physics_buffer_desc, pbuf_set_field, dyn_time_lvls
+    use physics_buffer,      only: pbuf_get_index, physics_buffer_desc, pbuf_set_field
 
 
     use cam_initfiles,       only: initial_file_get_id, topo_file_get_id
@@ -389,7 +393,7 @@ contains
 
     type(cam_out_t),     intent(inout) :: cam_out(begchunk:endchunk)
     type(physics_buffer_desc), pointer :: pbuf2d(:,:)
-    integer :: lchnk, m, n, ncol
+    integer :: lchnk, m, ncol
     type(file_desc_t), pointer :: fh_ini, fh_topo
     character(len=8) :: fieldname
     real(r8), pointer :: tptr(:,:), tptr_2(:,:), tptr3d(:,:,:), tptr3d_2(:,:,:)
@@ -492,9 +496,7 @@ contains
           if(masterproc) write(iulog,*) trim(fieldname), ' initialized to 1000.'
           tptr=1000._r8
        end if
-       do n=1,dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr, start=(/1,n/), kount=(/pcols,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr)
        deallocate(tptr)
     end if
 
@@ -509,9 +511,7 @@ contains
     call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
          tptr3d, found, gridname='physgrid')
     if(found) then
-       do n = 1, dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr3d)
     else
        call pbuf_set_field(pbuf2d, m, 0._r8)
        if (masterproc) write(iulog,*) trim(fieldname), ' initialized to 0.'
@@ -533,9 +533,7 @@ contains
              tptr3d = huge(1.0_r8)
           end if
        end if
-       do n = 1, dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr3d)
     end if
 
     fieldname = 'ICCWAT'
@@ -544,17 +542,13 @@ contains
        call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
           tptr3d, found, gridname='physgrid')
        if(found) then
-          do n = 1, dyn_time_lvls
-             call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-          end do
+             call pbuf_set_field(pbuf2d, m, tptr3d)
        else
           call cnst_get_ind('CLDICE', ixcldice)
           call infld('CLDICE',fh_ini,dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
              tptr3d, found, gridname='physgrid')
           if(found) then
-             do n = 1, dyn_time_lvls
-                call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-             end do
+                call pbuf_set_field(pbuf2d, m, tptr3d)
           else
              call pbuf_set_field(pbuf2d, m, 0._r8)
           end if
@@ -574,9 +568,7 @@ contains
        call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
             tptr3d, found, gridname='physgrid')
        if(found) then
-          do n = 1, dyn_time_lvls
-             call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-          end do
+             call pbuf_set_field(pbuf2d, m, tptr3d)
        else
           allocate(tptr3d_2(pcols,pver,begchunk:endchunk))
           call cnst_get_ind('CLDICE', ixcldice)
@@ -599,9 +591,7 @@ contains
           end if
 
           if (found .or. found2) then
-             do n = 1, dyn_time_lvls
-                call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-             end do
+                call pbuf_set_field(pbuf2d, m, tptr3d)
              if(dycore_is('LR')) call polar_average(pver, tptr3d)
           else
              call pbuf_set_field(pbuf2d, m, 0._r8)
@@ -630,9 +620,7 @@ contains
              tptr3d = huge(1._r8)
           end if
        end if
-       do n = 1, dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr3d)
     end if
 
     deallocate(tptr3d)
@@ -682,9 +670,7 @@ contains
        call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
             tptr3d, found, gridname='physgrid')
        if(found) then
-          do n = 1, dyn_time_lvls
-             call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-          end do
+             call pbuf_set_field(pbuf2d, m, tptr3d)
        else
           call pbuf_set_field(pbuf2d, m, 0._r8)
           if (masterproc) write(iulog,*) trim(fieldname), ' initialized to 0.'
@@ -733,6 +719,7 @@ contains
     use cldfrc2m,           only: cldfrc2m_init
     use co2_cycle,          only: co2_init, co2_transport
     use convect_deep,       only: convect_deep_init
+    use mcsp_cam,           only: mcsp_cam_init
     use convect_shallow,    only: convect_shallow_init
     use constituents,       only: cnst_get_ind
     use cam_diagnostics,    only: diag_init
@@ -925,6 +912,7 @@ contains
     call cldfrc2m_init()
 
     call convect_deep_init(pref_edge)
+    call mcsp_cam_init()
 
     if( microp_scheme == 'RK' ) then
        call rk_stratiform_cam_init()
@@ -978,7 +966,7 @@ contains
           call modal_aero_calcsize_init(pbuf2d)
        endif
 
-       call modal_aero_wateruptake_init(pbuf2d)
+       call modal_aero_wateruptake_cam_init(pbuf2d)
 
     end if
 
@@ -1210,7 +1198,7 @@ contains
     ! Second part of atmospheric physics package after updating of surface models
     !
     !-----------------------------------------------------------------------
-    use physics_buffer,  only: physics_buffer_desc, pbuf_get_chunk, pbuf_deallocate, pbuf_update_tim_idx
+    use physics_buffer,  only: physics_buffer_desc, pbuf_get_chunk, pbuf_deallocate
     use mo_lightning,    only: lightning_no_prod
     use cam_diagnostics, only: diag_deallocate, diag_surf
     use carma_intr,      only: carma_accumulate_stats
@@ -1313,7 +1301,6 @@ contains
     call t_startf ('physpkg_st2')
     call pbuf_deallocate(pbuf2d, 'physpkg')
 
-    call pbuf_update_tim_idx()
     call diag_deallocate()
     call t_stopf ('physpkg_st2')
 
@@ -1387,7 +1374,7 @@ contains
     !   o Ion Drag ( Only for WACCM )
     !   o Scale Dry Mass Energy
     !-----------------------------------------------------------------------
-    use physics_buffer, only: physics_buffer_desc, pbuf_set_field, pbuf_get_index, pbuf_get_field, pbuf_old_tim_idx
+    use physics_buffer, only: physics_buffer_desc, pbuf_set_field, pbuf_get_index, pbuf_get_field
     use shr_kind_mod,       only: r8 => shr_kind_r8
     use chemistry,          only: chem_is_active, chem_timestep_tend, chem_emissions
     use cam_diagnostics,    only: diag_phys_tend_writeout
@@ -1470,7 +1457,7 @@ contains
     logical  :: moist_mixing_ratio_dycore
 
     ! physics buffer fields for total energy and mass adjustment
-    integer itim_old, ifld
+    integer ifld
 
     real(r8), pointer, dimension(:,:) :: cld
     real(r8), pointer, dimension(:,:) :: qini
@@ -1514,12 +1501,11 @@ contains
 
     call t_startf('tphysac_init')
     ! Associate pointers with physics buffer fields
-    itim_old = pbuf_old_tim_idx()
 
-    call pbuf_get_field(pbuf, dtcore_idx, dtcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dqcore_idx, dqcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, ducore_idx, ducore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dvcore_idx, dvcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, dtcore_idx, dtcore )
+    call pbuf_get_field(pbuf, dqcore_idx, dqcore )
+    call pbuf_get_field(pbuf, ducore_idx, ducore )
+    call pbuf_get_field(pbuf, dvcore_idx, dvcore )
 
     call pbuf_get_field(pbuf, qini_idx, qini)
     call pbuf_get_field(pbuf, cldliqini_idx, cldliqini)
@@ -1528,10 +1514,10 @@ contains
     call pbuf_get_field(pbuf, toticeini_idx, toticeini)
 
     ifld = pbuf_get_index('CLD')
-    call pbuf_get_field(pbuf, ifld, cld, start=(/1,1,itim_old/),kount=(/pcols,pver,1/))
+    call pbuf_get_field(pbuf, ifld, cld)
 
     ifld = pbuf_get_index('AST')
-    call pbuf_get_field(pbuf, ifld, ast, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, ifld, ast )
 
     ! zero out local variables that may be written to snapshot for safety.
     fh2o(:) = 0._r8         ! used in chem_timestep_tend.
@@ -1972,7 +1958,7 @@ contains
     !
     ! This call must be after the last parameterization and call to physics_update
     !
-    call pbuf_set_field(pbuf, teout_idx, state%te_cur(:,dyn_te_idx), (/1,itim_old/),(/pcols,1/))
+    call pbuf_set_field(pbuf, teout_idx, state%te_cur(:,dyn_te_idx))
 
     ! FV: convert dry-type mixing ratios to moist here because physics_dme_adjust
     !     assumes moist. This is done in p_d_coupling for other dynamics. Bundy, Feb 2004.
@@ -2126,8 +2112,8 @@ contains
     !-----------------------------------------------------------------------
 
     use physics_buffer,  only: physics_buffer_desc, pbuf_get_field
-    use physics_buffer,  only: pbuf_get_index, pbuf_old_tim_idx
-    use physics_buffer,  only: col_type_subcol, dyn_time_lvls
+    use physics_buffer,  only: pbuf_get_index
+    use physics_buffer,  only: col_type_subcol
     use shr_kind_mod,    only: r8 => shr_kind_r8
 
     use dadadj_cam,      only: dadadj_tend
@@ -2148,6 +2134,7 @@ contains
     use air_composition, only: thermodynamic_active_species_liq_num,thermodynamic_active_species_liq_idx
     use air_composition, only: thermodynamic_active_species_ice_num,thermodynamic_active_species_ice_idx
     use convect_deep,    only: convect_deep_tend, convect_deep_tend_2
+    use mcsp_cam,        only: mcsp_cam_tend, do_mcsp
     use time_manager,    only: is_first_step, get_nstep
     use convect_shallow, only: convect_shallow_tend
     use check_energy,    only: check_energy_timestep_init, check_energy_cam_chng
@@ -2234,7 +2221,7 @@ contains
     integer :: macmic_it                      ! iteration variables
     real(r8) :: cld_macmic_ztodt              ! modified timestep
     ! physics buffer fields to compute tendencies for stratiform package
-    integer itim_old, ifld
+    integer ifld
     real(r8), pointer, dimension(:,:) :: cld        ! cloud fraction
 
 
@@ -2322,11 +2309,10 @@ contains
     nstep = get_nstep()
 
     ! Associate pointers with physics buffer fields
-    itim_old = pbuf_old_tim_idx()
     ifld = pbuf_get_index('CLD')
-    call pbuf_get_field(pbuf, ifld, cld, (/1,1,itim_old/),(/pcols,pver,1/))
+    call pbuf_get_field(pbuf, ifld, cld)
 
-    call pbuf_get_field(pbuf, teout_idx, teout, (/1,itim_old/), (/pcols,1/))
+    call pbuf_get_field(pbuf, teout_idx, teout)
 
     call pbuf_get_field(pbuf, qini_idx, qini)
     call pbuf_get_field(pbuf, cldliqini_idx, cldliqini)
@@ -2334,10 +2320,10 @@ contains
     call pbuf_get_field(pbuf, totliqini_idx, totliqini)
     call pbuf_get_field(pbuf, toticeini_idx, toticeini)
 
-    call pbuf_get_field(pbuf, dtcore_idx, dtcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dqcore_idx, dqcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, ducore_idx, ducore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dvcore_idx, dvcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, dtcore_idx, dtcore )
+    call pbuf_get_field(pbuf, dqcore_idx, dqcore )
+    call pbuf_get_field(pbuf, ducore_idx, ducore )
+    call pbuf_get_field(pbuf, dvcore_idx, dvcore )
 
     ifld    = pbuf_get_index('FRACIS')
     call pbuf_get_field(pbuf, ifld, fracis, start=(/1,1,1/), kount=(/pcols, pver, pcnst/)  )
@@ -2424,7 +2410,7 @@ contains
     call outfld('TEFIX', state%te_cur(:,dyn_te_idx), pcols, lchnk   )
 
     ! T, U, V tendency due to dynamics
-    if( nstep > dyn_time_lvls-1 ) then
+    if( nstep > 0 ) then
        dtcore(:ncol,:pver) = (state%t(:ncol,:pver) - dtcore(:ncol,:pver))/ztodt
        dqcore(:ncol,:pver) = (state%q(:ncol,:pver,ixq) - dqcore(:ncol,:pver))/ztodt
        ducore(:ncol,:pver) = (state%u(:ncol,:pver) - ducore(:ncol,:pver))/ztodt
@@ -2524,6 +2510,40 @@ contains
     ! Check energy integrals, including "reserved liquid"
     flx_cnd(:ncol) = prec_dp(:ncol) + rliq(:ncol)
     call check_energy_cam_chng(state, tend, "convect_deep", nstep, ztodt, zero, flx_cnd, snow_dp, zero)
+
+    !===================================================
+    ! Mesoscale coherent structure parameterization (MCSP)
+    !===================================================
+    ! Redistributes the deep convective heating and moistening; active only when a
+    ! coefficient is set in mcsp_nl. Reads CLDTOP, TTEND_DP_CORE and QTEND_DP_CORE
+    ! from pbuf, which convect_deep_tend has just set.
+    if (do_mcsp) then
+       call t_startf('mcsp_cam_tend')
+
+       if (trim(cam_take_snapshot_before) == "mcsp_cam_tend") then
+          call cam_snapshot_all_outfld_tphysbc(cam_snapshot_before_num, state, tend, cam_in, cam_out, pbuf, &
+              flx_heat, cmfmc, cmfcme, zdu, rliq, dlf, dlf2, rliq2, det_s, det_ice, net_flx)
+       end if
+
+       call mcsp_cam_tend(state, ptend, ztodt, pbuf)
+
+       if ( (trim(cam_take_snapshot_after) == "mcsp_cam_tend") .and. &
+            (trim(cam_take_snapshot_before) == trim(cam_take_snapshot_after))) then
+          call cam_snapshot_ptend_outfld(ptend, lchnk)
+       end if
+
+       call physics_update(state, ptend, ztodt, tend)
+
+       if (trim(cam_take_snapshot_after) == "mcsp_cam_tend") then
+          call cam_snapshot_all_outfld_tphysbc(cam_snapshot_after_num, state, tend, cam_in, cam_out, pbuf, &
+              flx_heat, cmfmc, cmfcme, zdu, rliq, dlf, dlf2, rliq2, det_s, det_ice, net_flx)
+       end if
+
+       ! MCSP conserves column dry static energy, kinetic energy and water by construction
+       call check_energy_cam_chng(state, tend, "mcsp", nstep, ztodt, zero, zero, zero, zero)
+
+       call t_stopf('mcsp_cam_tend')
+    end if
 
     !
     ! Call Hack (1994) convection scheme to deal with shallow/mid-level convection
