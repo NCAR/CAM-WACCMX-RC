@@ -2059,10 +2059,6 @@ sub write_filepath
         }
     }
 
-    # CESM has a standard source mods location.
-    my $CASEROOT = "$ENV{'CASEROOT'}";
-    print $fh "$CASEROOT/SourceMods/src.cam\n";
-
     # offline unit driver (defaults to stub)
     print $fh "$camsrcdir/src/unit_drivers\n";
     print $fh "$camsrcdir/src/unit_drivers/${offline_drv}\n";
@@ -2129,6 +2125,8 @@ sub write_filepath
 	print $fh "$camsrcdir/src/chemistry/bulk_aero\n";
     }
     print $fh "$camsrcdir/src/chemistry/aerosol\n";
+    print $fh "$camsrcdir/src/atmos_phys/schemes/aerosol/core\n";
+    print $fh "$camsrcdir/src/atmos_phys/schemes/modal_aero/core\n";
 
     if ($waccmx) {
         print $fh "$camsrcdir/src/physics/waccmx\n";
@@ -2189,11 +2187,12 @@ sub write_filepath
     }
 
     if ($clubb_sgs) {
-       print $fh "$camsrcdir/src/physics/clubb/src/CLUBB_core\n";
+       print $fh "$camsrcdir/src/atmos_phys/schemes/clubb\n";
+       print $fh "$camsrcdir/src/atmos_phys/schemes/clubb/clubb/src/CLUBB_core\n";
     }
 
     if ($silhs) {
-       print $fh "$camsrcdir/src/physics/clubb/src/SILHS\n";
+       print $fh "$camsrcdir/src/atmos_phys/schemes/clubb/clubb/src/SILHS\n";
     }
 
     if ($phys_pkg eq 'cam7' or $phys_pkg eq 'data_trop') {
@@ -2214,6 +2213,7 @@ sub write_filepath
     # Add the CCPP'ized subdirectories
     print $fh "$camsrcdir/src/atmos_phys/schemes/tropopause_find\n";
     print $fh "$camsrcdir/src/atmos_phys/schemes/zhang_mcfarlane\n";
+    print $fh "$camsrcdir/src/atmos_phys/schemes/mcsp\n";
     print $fh "$camsrcdir/src/atmos_phys/schemes/dry_adiabatic_adjust\n";
     print $fh "$camsrcdir/src/atmos_phys/schemes/conservation_adjust/check_energy\n";
     print $fh "$camsrcdir/src/atmos_phys/schemes/conservation_adjust/dme_adjust\n";
@@ -2228,7 +2228,7 @@ sub write_filepath
     print $fh "$camsrcdir/src/atmos_phys/schemes/holtslag_boville\n";
     print $fh "$camsrcdir/src/atmos_phys/schemes/bretherton_park\n";
     print $fh "$camsrcdir/src/atmos_phys/schemes/beljaars_drag\n";
-    print $fh "$camsrcdir/src/atmos_phys/schemes/microp_aero\n";
+    print $fh "$camsrcdir/src/atmos_phys/schemes/microp_aero/core\n";
     print $fh "$camsrcdir/src/atmos_phys/schemes/cloud_water\n";
 
     # Dynamics package and test utilities

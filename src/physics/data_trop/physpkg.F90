@@ -33,11 +33,12 @@ module physpkg
   use cam_logfile,     only: iulog
   use camsrfexch,      only: cam_export
 
-  use modal_aero_calcsize,    only: modal_aero_calcsize_init, modal_aero_calcsize_diag, modal_aero_calcsize_reg
-  use modal_aero_calcsize,    only: modal_aero_calcsize_sub
-  use modal_aero_wateruptake, only: modal_aero_wateruptake_init, modal_aero_wateruptake_dr, modal_aero_wateruptake_reg
+  use modal_aero_calcsize_cam, only: modal_aero_calcsize_init, modal_aero_calcsize_diag, modal_aero_calcsize_reg
+  use modal_aero_calcsize_cam, only: modal_aero_calcsize_sub
+  use modal_aero_wateruptake_cam, only: modal_aero_wateruptake_cam_init, modal_aero_wateruptake_dr, modal_aero_wateruptake_reg
 
   use offline_driver,   only: offline_driver_dorun
+  use clubb_mf,         only: do_clubb_mf
 
   implicit none
   private
@@ -89,8 +90,6 @@ module physpkg
   integer ::  snow_pcw_idx       = 0
   integer ::  prec_dp_idx        = 0
   integer ::  snow_dp_idx        = 0
-  integer ::  prec_sh_idx        = 0
-  integer ::  snow_sh_idx        = 0
   integer ::  dlfzm_idx          = 0     ! detrained convective cloud water mixing ratio.
   integer ::  ducore_idx         = 0     ! ducore index in physics buffer
   integer ::  dvcore_idx         = 0     ! dvcore index in physics buffer
@@ -115,7 +114,7 @@ contains
     !
     !-----------------------------------------------------------------------
     use cam_abortutils,     only: endrun
-    use physics_buffer,     only: pbuf_init_time, pbuf_cam_snapshot_register
+    use physics_buffer,     only: pbuf_cam_snapshot_register
     use physics_buffer,     only: pbuf_add_field, dtype_r8, pbuf_register_subcol
     use constituents,       only: cnst_add, cnst_chk_dim
 
@@ -135,6 +134,7 @@ contains
     use ghg_data,           only: ghg_data_register
     use vertical_diffusion, only: vd_register
     use convect_deep,       only: convect_deep_register
+    use mcsp_cam,           only: mcsp_cam_register
     use convect_diagnostics,only: convect_diagnostics_register
     use radiation,          only: radiation_register
     use co2_cycle,          only: co2_register
@@ -185,9 +185,6 @@ contains
                       cam_snapshot_after_num_out  = cam_snapshot_after_num)
 
     subcol_scheme = subcol_get_scheme()
-
-    ! Initialize dyn_time_lvls
-    call pbuf_init_time()
 
     ! Register the subcol scheme
     call subcol_register()
@@ -306,6 +303,9 @@ contains
        ! deep convection
        call convect_deep_register
 
+       ! MCSP (mesoscale coherent structure parameterization)
+       call mcsp_cam_register()
+
        ! convection diagnostics
        call convect_diagnostics_register
 
@@ -368,7 +368,7 @@ contains
   subroutine phys_inidat( cam_out, pbuf2d )
     use cam_abortutils,      only: endrun
 
-    use physics_buffer,      only: pbuf_get_index, physics_buffer_desc, pbuf_set_field, dyn_time_lvls
+    use physics_buffer,      only: pbuf_get_index, physics_buffer_desc, pbuf_set_field
 
 
     use cam_initfiles,       only: initial_file_get_id, topo_file_get_id
@@ -384,7 +384,7 @@ contains
 
     type(cam_out_t),     intent(inout) :: cam_out(begchunk:endchunk)
     type(physics_buffer_desc), pointer :: pbuf2d(:,:)
-    integer :: lchnk, m, n, i, k, ncol
+    integer :: lchnk, m, i, k, ncol
     type(file_desc_t), pointer :: fh_ini, fh_topo
     character(len=8) :: fieldname
     real(r8), pointer :: tptr(:,:), tptr_2(:,:), tptr3d(:,:,:), tptr3d_2(:,:,:)
@@ -493,9 +493,7 @@ contains
           if(masterproc) write(iulog,*) trim(fieldname), ' initialized to 1000.'
           tptr=1000._r8
        end if
-       do n=1,dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr, start=(/1,n/), kount=(/pcols,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr)
        deallocate(tptr)
     end if
 
@@ -513,9 +511,7 @@ contains
     call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
          tptr3d, found, gridname='physgrid')
     if(found) then
-       do n = 1, dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr3d)
     else
        call pbuf_set_field(pbuf2d, m, 0._r8)
        if (masterproc) write(iulog,*) trim(fieldname), ' initialized to 0.'
@@ -537,9 +533,7 @@ contains
              tptr3d = huge(1.0_r8)
           end if
        end if
-       do n = 1, dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr3d)
     end if
 
     fieldname = 'ICCWAT'
@@ -548,17 +542,13 @@ contains
        call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
           tptr3d, found, gridname='physgrid')
        if(found) then
-          do n = 1, dyn_time_lvls
-             call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-          end do
+             call pbuf_set_field(pbuf2d, m, tptr3d)
        else
           call cnst_get_ind('CLDICE', ixcldice)
           call infld('CLDICE',fh_ini,dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
              tptr3d, found, gridname='physgrid')
           if(found) then
-             do n = 1, dyn_time_lvls
-                call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-             end do
+                call pbuf_set_field(pbuf2d, m, tptr3d)
           else
              call pbuf_set_field(pbuf2d, m, 0._r8)
           end if
@@ -578,9 +568,7 @@ contains
        call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
             tptr3d, found, gridname='physgrid')
        if(found) then
-          do n = 1, dyn_time_lvls
-             call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-          end do
+             call pbuf_set_field(pbuf2d, m, tptr3d)
        else
           allocate(tptr3d_2(pcols,pver,begchunk:endchunk), stat=ierr)
           if (ierr /= 0) then
@@ -606,9 +594,7 @@ contains
           end if
 
           if (found .or. found2) then
-             do n = 1, dyn_time_lvls
-                call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-             end do
+                call pbuf_set_field(pbuf2d, m, tptr3d)
              if(dycore_is('LR')) call polar_average(pver, tptr3d)
           else
              call pbuf_set_field(pbuf2d, m, 0._r8)
@@ -634,9 +620,7 @@ contains
              tptr3d = huge(1._r8)
           end if
        end if
-       do n = 1, dyn_time_lvls
-          call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-       end do
+          call pbuf_set_field(pbuf2d, m, tptr3d)
     end if
 
     fieldname = 'CONCLD'
@@ -645,9 +629,7 @@ contains
        call infld(fieldname, fh_ini, dim1name, 'lev', dim2name, 1, pcols, 1, pver, begchunk, endchunk, &
             tptr3d, found, gridname='physgrid')
        if(found) then
-          do n = 1, dyn_time_lvls
-             call pbuf_set_field(pbuf2d, m, tptr3d, (/1,1,n/),(/pcols,pver,1/))
-          end do
+             call pbuf_set_field(pbuf2d, m, tptr3d)
        else
           call pbuf_set_field(pbuf2d, m, 0._r8)
           if (masterproc) write(iulog,*) trim(fieldname), ' initialized to 0.'
@@ -736,6 +718,7 @@ contains
     use cldfrc2m,           only: cldfrc2m_init
     use co2_cycle,          only: co2_init, co2_transport
     use convect_deep,       only: convect_deep_init
+    use mcsp_cam,           only: mcsp_cam_init
     use convect_diagnostics,only: convect_diagnostics_init
     use cam_diagnostics,    only: diag_init
     use gw_drag_cam,        only: gw_drag_cam_init
@@ -927,6 +910,7 @@ contains
     call cldfrc2m_init()
 
     call convect_deep_init(pref_edge)
+    call mcsp_cam_init()
 
     if (.not. do_clubb_sgs) call macrop_driver_init(pbuf2d)
     call microp_aero_init(phys_state,pbuf2d)
@@ -954,8 +938,6 @@ contains
 
     prec_dp_idx  = pbuf_get_index('PREC_DP')
     snow_dp_idx  = pbuf_get_index('SNOW_DP')
-    prec_sh_idx  = pbuf_get_index('PREC_SH')
-    snow_sh_idx  = pbuf_get_index('SNOW_SH')
 
     dlfzm_idx = pbuf_get_index('DLFZM', ierr)
     cmfmczm_idx = pbuf_get_index('CMFMC_DP', ierr)
@@ -976,7 +958,7 @@ contains
           call modal_aero_calcsize_init(pbuf2d)
        endif
 
-       call modal_aero_wateruptake_init(pbuf2d)
+       call modal_aero_wateruptake_cam_init(pbuf2d)
 
     end if
 
@@ -1231,7 +1213,7 @@ contains
     ! Second part of atmospheric physics package after updating of surface models
     !
     !-----------------------------------------------------------------------
-    use physics_buffer,  only: physics_buffer_desc, pbuf_get_chunk, pbuf_deallocate, pbuf_update_tim_idx
+    use physics_buffer,  only: physics_buffer_desc, pbuf_get_chunk, pbuf_deallocate
     use mo_lightning,    only: lightning_no_prod
     use cam_diagnostics, only: diag_deallocate, diag_surf
     use carma_intr,      only: carma_accumulate_stats
@@ -1339,7 +1321,6 @@ contains
     call t_startf ('physpkg_st2')
     call pbuf_deallocate(pbuf2d, 'physpkg')
 
-    call pbuf_update_tim_idx()
     call diag_deallocate()
     call t_stopf ('physpkg_st2')
 
@@ -1496,7 +1477,7 @@ contains
     !   o Ion Drag ( Only for WACCM )
     !   o Scale Dry Mass Energy
     !-----------------------------------------------------------------------
-    use physics_buffer, only: physics_buffer_desc, pbuf_set_field, pbuf_get_index, pbuf_get_field, pbuf_old_tim_idx
+    use physics_buffer, only: physics_buffer_desc, pbuf_set_field, pbuf_get_index, pbuf_get_field
     use chemistry,          only: chem_is_active, chem_timestep_tend, chem_emissions
     use cam_diagnostics,    only: diag_phys_tend_writeout
     use gw_drag_cam,        only: gw_drag_cam_tend
@@ -1630,6 +1611,17 @@ contains
     real(r8),pointer :: prec_sed(:)     ! total precip from cloud sedimentation
     real(r8),pointer :: snow_sed(:)     ! snow from cloud ice sedimentation
 
+    ! CLUBB+MF precip is carried in the deep-convection pbuf fields
+    real(r8),pointer :: prec_dp(:)      ! total precipitation from CLUBB-MF (deep)
+    real(r8),pointer :: snow_dp(:)      ! snow from CLUBB-MF (deep)
+
+    ! CLUBB+MF deep-convection cloud fields (evolve every macmic
+    ! iteration inside clubb_tend_cam; averaged over the sub-cycle
+    ! below, like prec_dp/snow_dp)
+    real(r8),pointer :: dp_frac(:,:)    ! deep convective cloud fraction
+    real(r8),pointer :: dp_icwmr(:,:)   ! deep convection in-cloud water mixing ratio
+    real(r8),pointer :: concld(:,:)     ! convective cloud fraction
+
     ! Local copies for substepping
     real(r8) :: prec_pcw_macmic(pcols)
     real(r8) :: snow_pcw_macmic(pcols)
@@ -1639,6 +1631,13 @@ contains
     ! carma precipitation variables
     real(r8) :: prec_sed_carma(pcols)          ! total precip from cloud sedimentation (CARMA)
     real(r8) :: snow_sed_carma(pcols)          ! snow from cloud ice sedimentation (CARMA)
+
+    ! CLUBB+MF
+    real(r8) :: prec_dp_macmic(pcols)
+    real(r8) :: snow_dp_macmic(pcols)
+    real(r8) :: dp_frac_macmic(pcols,pver)
+    real(r8) :: dp_icwmr_macmic(pcols,pver)
+    real(r8) :: concld_macmic(pcols,pver)
 
     logical :: labort                            ! abort flag
 
@@ -1662,7 +1661,7 @@ contains
     integer :: iaermod_lcl
 
     ! physics buffer fields for total energy and mass adjustment
-    integer itim_old, ifld
+    integer ifld
 
     real(r8), pointer, dimension(:,:) :: cld
     real(r8), pointer, dimension(:,:) :: qini
@@ -1702,12 +1701,11 @@ contains
 
     call t_startf('tphysac_init')
     ! Associate pointers with physics buffer fields
-    itim_old = pbuf_old_tim_idx()
 
-    call pbuf_get_field(pbuf, dtcore_idx, dtcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dqcore_idx, dqcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, ducore_idx, ducore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dvcore_idx, dvcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, dtcore_idx, dtcore )
+    call pbuf_get_field(pbuf, dqcore_idx, dqcore )
+    call pbuf_get_field(pbuf, ducore_idx, ducore )
+    call pbuf_get_field(pbuf, dvcore_idx, dvcore )
 
     call pbuf_get_field(pbuf, qini_idx, qini)
     call pbuf_get_field(pbuf, cldliqini_idx, cldliqini)
@@ -1716,10 +1714,10 @@ contains
     call pbuf_get_field(pbuf, toticeini_idx, toticeini)
 
     ifld = pbuf_get_index('CLD')
-    call pbuf_get_field(pbuf, ifld, cld, start=(/1,1,itim_old/),kount=(/pcols,pver,1/))
+    call pbuf_get_field(pbuf, ifld, cld)
 
     ifld = pbuf_get_index('AST')
-    call pbuf_get_field(pbuf, ifld, ast, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, ifld, ast )
 
     call cnst_get_ind('Q', ixq)
     call cnst_get_ind('CLDLIQ', ixcldliq)
@@ -1735,6 +1733,17 @@ contains
     if (is_subcol_on()) then
       call pbuf_get_field(pbuf, prec_str_idx, prec_str_sc, col_type=col_type_subcol)
       call pbuf_get_field(pbuf, snow_str_idx, snow_str_sc, col_type=col_type_subcol)
+    end if
+
+    if (do_clubb_mf) then
+       call pbuf_get_field(pbuf, prec_dp_idx, prec_dp )
+       call pbuf_get_field(pbuf, snow_dp_idx, snow_dp )
+       ifld = pbuf_get_index('DP_FRAC')
+       call pbuf_get_field(pbuf, ifld, dp_frac)
+       ifld = pbuf_get_index('ICWMRDP')
+       call pbuf_get_field(pbuf, ifld, dp_icwmr)
+       ifld = pbuf_get_index('CONCLD')
+       call pbuf_get_field(pbuf, ifld, concld, start=(/1,1/), kount=(/pcols,pver/))
     end if
 
     if (dlfzm_idx > 0) then
@@ -1860,6 +1869,14 @@ contains
        prec_pcw_macmic = 0._r8
        snow_pcw_macmic = 0._r8
 
+       if (do_clubb_mf) then
+          prec_dp_macmic = 0._r8
+          snow_dp_macmic = 0._r8
+          dp_frac_macmic = 0._r8
+          dp_icwmr_macmic = 0._r8
+          concld_macmic = 0._r8
+       end if
+
        ! contrail parameterization
        ! see Chen et al., 2012: Global contrail coverage simulated
        !                        by CAM5 with the inventory of 2006 global aircraft emissions, JAMES
@@ -1894,7 +1911,11 @@ contains
 
              ! Since we "added" the reserved liquid back in this routine, we need
              ! to account for it in the energy checker
-             flx_cnd(:ncol) = -1._r8*rliq(:ncol)
+             if (do_clubb_mf) then
+                flx_cnd(:ncol) = -1._r8*rliq(:ncol) + prec_dp(:ncol)
+             else
+                flx_cnd(:ncol) = -1._r8*rliq(:ncol)
+             end if
              flx_heat(:ncol) = cam_in%shf(:ncol) + det_s(:ncol)
 
              ! Unfortunately, physics_update does not know what time period
@@ -1926,6 +1947,14 @@ contains
                 flx_heat(:ncol)/cld_macmic_num_steps)
 
           call t_stopf('macrop_tend')
+
+          if (do_clubb_mf) then
+             prec_dp_macmic(:ncol) = prec_dp_macmic(:ncol) + prec_dp(:ncol)
+             snow_dp_macmic(:ncol) = snow_dp_macmic(:ncol) + snow_dp(:ncol)
+             dp_frac_macmic(:ncol,:)  = dp_frac_macmic(:ncol,:)  + dp_frac(:ncol,:)
+             dp_icwmr_macmic(:ncol,:) = dp_icwmr_macmic(:ncol,:) + dp_icwmr(:ncol,:)
+             concld_macmic(:ncol,:)   = concld_macmic(:ncol,:)   + concld(:ncol,:)
+          end if
 
           !===================================================
           ! Calculate cloud microphysics
@@ -2097,6 +2126,21 @@ contains
        prec_str(:ncol) = prec_pcw(:ncol) + prec_sed(:ncol)
        snow_str(:ncol) = snow_pcw(:ncol) + snow_sed(:ncol)
 
+       if (do_clubb_mf) then
+          prec_dp(:ncol) = prec_dp_macmic(:ncol)/cld_macmic_num_steps
+          snow_dp(:ncol) = snow_dp_macmic(:ncol)/cld_macmic_num_steps
+          ! The deep-convection cloud fields evolve every macmic iteration
+          ! inside clubb_tend_cam so that in-loop consumers (PUMAS reads
+          ! CLD/CONCLD) stay coupled to the current sub-step; the post-loop
+          ! consumers (aero_model_wetdep, convect_deep_tend_2/aero_convproc,
+          ! conv_water, radiation) get the sub-cycle mean here.
+          dp_frac(:ncol,:)  = dp_frac_macmic(:ncol,:)/cld_macmic_num_steps
+          dp_icwmr(:ncol,:) = dp_icwmr_macmic(:ncol,:)/cld_macmic_num_steps
+          concld(:ncol,:)   = concld_macmic(:ncol,:)/cld_macmic_num_steps
+          ! rebuild total cloud from the averaged deep fraction, matching
+          ! clubb_intr's cld = min(ast + deepcu, 1)
+          cld(:ncol,:) = min(ast(:ncol,:) + dp_frac(:ncol,:), 1._r8)
+       end if
     endif
 
     ! Add the precipitation from CARMA to the precipitation from stratiform.
@@ -2645,7 +2689,7 @@ contains
     !
     ! This call must be after the last parameterization and call to physics_update
     !
-    call pbuf_set_field(pbuf, teout_idx, state%te_cur(:,dyn_te_idx), (/1,itim_old/),(/pcols,1/))
+    call pbuf_set_field(pbuf, teout_idx, state%te_cur(:,dyn_te_idx))
     !
     ! FV: convert dry-type mixing ratios to moist here because physics_dme_adjust
     !     assumes moist. This is done in p_d_coupling for other dynamics. Bundy, Feb 2004.
@@ -2789,8 +2833,8 @@ contains
     !-----------------------------------------------------------------------
 
     use physics_buffer,  only: physics_buffer_desc, pbuf_get_field
-    use physics_buffer,  only: pbuf_get_index, pbuf_old_tim_idx
-    use physics_buffer,  only: col_type_subcol, dyn_time_lvls
+    use physics_buffer,  only: pbuf_get_index
+    use physics_buffer,  only: col_type_subcol
 
     use dadadj_cam,      only: dadadj_tend
     use physics_types,   only: physics_update, &
@@ -2804,6 +2848,7 @@ contains
     use air_composition, only: thermodynamic_active_species_liq_num,thermodynamic_active_species_liq_idx
     use air_composition, only: thermodynamic_active_species_ice_num,thermodynamic_active_species_ice_idx
     use convect_deep,    only: convect_deep_tend
+    use mcsp_cam,        only: mcsp_cam_tend, do_mcsp
     use time_manager,    only: is_first_step, get_nstep
     use convect_diagnostics,only: convect_diagnostics_calc
     use check_energy,    only: check_energy_cam_chng, check_energy_cam_fix
@@ -2867,7 +2912,7 @@ contains
     integer :: m, m_cnst
 
     ! physics buffer fields to compute tendencies for stratiform package
-    integer itim_old, ifld
+    integer ifld
     real(r8), pointer, dimension(:,:) :: cld        ! cloud fraction
 
     ! physics buffer fields for total energy and mass adjustment
@@ -2890,8 +2935,6 @@ contains
     ! convective precipitation variables
     real(r8),pointer :: prec_dp(:)                ! total precipitation from ZM convection
     real(r8),pointer :: snow_dp(:)                ! snow from ZM convection
-    real(r8),pointer :: prec_sh(:)                ! total precipitation from Hack convection
-    real(r8),pointer :: snow_sh(:)                ! snow from Hack convection
 
     ! stratiform precipitation variables
     real(r8),pointer :: prec_str(:)    ! sfc flux of precip from stratiform (m/s)
@@ -2939,11 +2982,10 @@ contains
     nstep = get_nstep()
 
     ! Associate pointers with physics buffer fields
-    itim_old = pbuf_old_tim_idx()
     ifld = pbuf_get_index('CLD')
-    call pbuf_get_field(pbuf, ifld, cld, (/1,1,itim_old/),(/pcols,pver,1/))
+    call pbuf_get_field(pbuf, ifld, cld)
 
-    call pbuf_get_field(pbuf, teout_idx, teout, (/1,itim_old/), (/pcols,1/))
+    call pbuf_get_field(pbuf, teout_idx, teout)
 
     call pbuf_get_field(pbuf, qini_idx, qini)
     call pbuf_get_field(pbuf, cldliqini_idx, cldliqini)
@@ -2951,10 +2993,10 @@ contains
     call pbuf_get_field(pbuf, totliqini_idx, totliqini)
     call pbuf_get_field(pbuf, toticeini_idx, toticeini)
 
-    call pbuf_get_field(pbuf, dtcore_idx, dtcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dqcore_idx, dqcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, ducore_idx, ducore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
-    call pbuf_get_field(pbuf, dvcore_idx, dvcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, dtcore_idx, dtcore )
+    call pbuf_get_field(pbuf, dqcore_idx, dqcore )
+    call pbuf_get_field(pbuf, ducore_idx, ducore )
+    call pbuf_get_field(pbuf, dvcore_idx, dvcore )
 
     ifld    = pbuf_get_index('FRACIS')
     call pbuf_get_field(pbuf, ifld, fracis, start=(/1,1,1/), kount=(/pcols, pver, pcnst/)  )
@@ -3040,7 +3082,7 @@ contains
     call outfld('TEFIX', state%te_cur(:,dyn_te_idx), pcols, lchnk   )
 
     ! T, U, V tendency due to dynamics
-    if ( nstep > dyn_time_lvls-1 ) then
+    if ( nstep > 0 ) then
        dtcore(:ncol,:pver) = (state%t(:ncol,:pver) - dtcore(:ncol,:pver))/ztodt
        dqcore(:ncol,:pver) = (state%q(:ncol,:pver,ixq) - dqcore(:ncol,:pver))/ztodt
        ducore(:ncol,:pver) = (state%u(:ncol,:pver) - ducore(:ncol,:pver))/ztodt
@@ -3123,8 +3165,6 @@ contains
 
     call pbuf_get_field(pbuf, prec_dp_idx, prec_dp )
     call pbuf_get_field(pbuf, snow_dp_idx, snow_dp )
-    call pbuf_get_field(pbuf, prec_sh_idx, prec_sh )
-    call pbuf_get_field(pbuf, snow_sh_idx, snow_sh )
 
     call pbuf_get_field(pbuf, prec_str_idx, prec_str )
     call pbuf_get_field(pbuf, snow_str_idx, snow_str )
@@ -3139,8 +3179,52 @@ contains
     end if
 
     ! Check energy integrals, including "reserved liquid"
-    flx_cnd(:ncol) = prec_dp(:ncol) + rliq(:ncol)
-    call check_energy_cam_chng(state, tend, "convect_deep", nstep, ztodt, zero, flx_cnd, snow_dp, zero)
+    if (do_clubb_mf) then
+       ! CLUBB_MF: the deep ptend is empty here (the plume tendencies are
+       ! applied by clubb in tphysac, where their precipitation enters the
+       ! energy check through flx_cnd).  PREC_DP/SNOW_DP hold the PREVIOUS
+       ! timestep's plume precipitation for cam_export and must not be
+       ! counted as a boundary flux of this (empty) tendency.
+       flx_cnd(:ncol) = 0._r8
+       call check_energy_cam_chng(state, tend, "convect_deep", nstep, ztodt, zero, flx_cnd, zero, zero)
+    else
+       flx_cnd(:ncol) = prec_dp(:ncol) + rliq(:ncol)
+       call check_energy_cam_chng(state, tend, "convect_deep", nstep, ztodt, zero, flx_cnd, snow_dp, zero)
+    end if
+
+    !===================================================
+    ! Mesoscale coherent structure parameterization (MCSP)
+    !===================================================
+    ! Redistributes the deep convective heating and moistening; active only when a
+    ! coefficient is set in mcsp_nl. Reads CLDTOP, TTEND_DP_CORE and QTEND_DP_CORE
+    ! from pbuf, which convect_deep_tend has just set.
+    if (do_mcsp) then
+       call t_startf('mcsp_cam_tend')
+
+       if (trim(cam_take_snapshot_before) == "mcsp_cam_tend") then
+          call cam_snapshot_all_outfld_tphysbc(cam_snapshot_before_num, state, tend, cam_in, cam_out, pbuf, &
+              cmfmc, cmfcme, zdu, rliq, dlf, dlf2, rliq2, net_flx)
+       end if
+
+       call mcsp_cam_tend(state, ptend, ztodt, pbuf)
+
+       if ( (trim(cam_take_snapshot_after) == "mcsp_cam_tend") .and. &
+            (trim(cam_take_snapshot_before) == trim(cam_take_snapshot_after))) then
+          call cam_snapshot_ptend_outfld(ptend, lchnk)
+       end if
+
+       call physics_update(state, ptend, ztodt, tend)
+
+       if (trim(cam_take_snapshot_after) == "mcsp_cam_tend") then
+          call cam_snapshot_all_outfld_tphysbc(cam_snapshot_after_num, state, tend, cam_in, cam_out, pbuf, &
+              cmfmc, cmfcme, zdu, rliq, dlf, dlf2, rliq2, net_flx)
+       end if
+
+       ! MCSP conserves column dry static energy, kinetic energy and water by construction
+       call check_energy_cam_chng(state, tend, "mcsp", nstep, ztodt, zero, zero, zero, zero)
+
+       call t_stopf('mcsp_cam_tend')
+    end if
 
     !===================================================
     ! Compute convect diagnostics

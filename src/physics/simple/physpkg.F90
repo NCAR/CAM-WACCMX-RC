@@ -72,7 +72,7 @@ contains
 
     use physconst,          only: mwh2o, cpwv
     use constituents,       only: cnst_add, cnst_chk_dim
-    use physics_buffer,     only: pbuf_init_time, dtype_r8, pbuf_add_field, pbuf_cam_snapshot_register
+    use physics_buffer,     only: dtype_r8, pbuf_add_field, pbuf_cam_snapshot_register
 
     use cam_diagnostics,    only: diag_register
     use chemistry,          only: chem_register
@@ -81,6 +81,7 @@ contains
     use kessler_cam,        only: kessler_register
     use tj2016_cam,         only: thatcher_jablonowski_register
     use frierson_cam,       only: frierson_register
+    use ctem_diags_mod,     only: ctem_diags_reg
 
     !---------------------------Local variables-----------------------------
     !
@@ -93,9 +94,6 @@ contains
                       cam_take_snapshot_after_out = cam_take_snapshot_after, &
                       cam_snapshot_before_num_out = cam_snapshot_before_num, &
                       cam_snapshot_after_num_out  = cam_snapshot_after_num)
-
-    ! Initialize dyn_time_lvls
-    call pbuf_init_time()
 
     ! Register water vapor.
     ! ***** N.B. ***** This must be the first call to cnst_add so that
@@ -142,6 +140,9 @@ contains
     call cnst_chk_dim()
 
     ! ***NOTE*** No registering constituents after the call to cnst_chk_dim.
+
+    ! TEM diagnostics
+    call ctem_diags_reg()
 
     ! This needs to be last as it requires all pbuf fields to be added
     if (cam_snapshot_before_num > 0 .or. cam_snapshot_after_num > 0) then
@@ -205,10 +206,12 @@ contains
     use wv_saturation,      only: wv_sat_init
     use phys_debug_util,    only: phys_debug_init
     use qneg_module,        only: qneg_init
+    use phys_grid_ctem,     only: phys_grid_ctem_init
     use nudging,            only: Nudge_Model, nudging_init
     use cam_snapshot,       only: cam_snapshot_init
     use cam_budget,         only: cam_budget_init
     use constituents,       only: cnst_get_ind
+    use ctem_diags_mod,     only: ctem_diags_init
 
 
     use ccpp_constituent_prop_mod, only: ccpp_const_props_init
@@ -289,11 +292,16 @@ contains
     ! Initialize qneg3 and qneg4
     call qneg_init()
 
+    ! Initialize phys TEM diagnostics
+    call phys_grid_ctem_init()
+
     ! Initialize the snapshot capability
     call cam_snapshot_init(cam_in, cam_out, pbuf2d, begchunk)
 
     ! Initialize energy budgets
     call cam_budget_init()
+
+    call ctem_diags_init()
 
   end subroutine phys_init
 
@@ -309,6 +317,7 @@ contains
     use time_manager,    only: get_nstep
     use cam_diagnostics, only: diag_allocate, diag_physvar_ic
     use check_energy,    only: check_energy_gmean
+    use ctem_diags_mod,  only: ctem_diags_calc
 
     use physics_buffer,  only: physics_buffer_desc, pbuf_get_chunk, pbuf_allocate
     !
@@ -343,6 +352,9 @@ contains
 
     call pbuf_allocate(pbuf2d, 'physpkg')
     call diag_allocate()
+
+    ! TEM diagnostics
+    call ctem_diags_calc(phys_state)
 
     !-----------------------------------------------------------------------
     ! Advance time information
@@ -396,7 +408,7 @@ contains
     ! Second part of atmospheric physics package after updating of surface models
     !
     !-----------------------------------------------------------------------
-    use physics_buffer,         only: physics_buffer_desc, pbuf_get_chunk, pbuf_deallocate, pbuf_update_tim_idx
+    use physics_buffer,         only: physics_buffer_desc, pbuf_get_chunk, pbuf_deallocate
 
 
     use cam_diagnostics, only: diag_deallocate
@@ -451,7 +463,6 @@ contains
     call t_startf ('physpkg_st2')
     call pbuf_deallocate(pbuf2d, 'physpkg')
 
-    call pbuf_update_tim_idx()
     call diag_deallocate()
     call t_stopf ('physpkg_st2')
 
@@ -461,6 +472,9 @@ contains
 
   subroutine phys_final( phys_state, phys_tend, pbuf2d)
     use physics_buffer, only : physics_buffer_desc, pbuf_deallocate
+    use phys_grid_ctem, only : phys_grid_ctem_final
+    use ctem_diags_mod, only: ctem_diags_final
+    use nudging,        only: Nudge_Model, nudging_final
     !-----------------------------------------------------------------------
     !
     ! Purpose:
@@ -479,6 +493,12 @@ contains
     deallocate(phys_state)
     deallocate(phys_tend)
 
+    call phys_grid_ctem_final()
+
+    if(Nudge_Model) call nudging_final()
+
+    call ctem_diags_final()
+
   end subroutine phys_final
 
   !======================================================================================
@@ -490,7 +510,7 @@ contains
     !
     !   o Moist Held-Suarez configuration: Compute surface fluxes and PBL mixing
     !-----------------------------------------------------------------------
-    use physics_buffer,  only: physics_buffer_desc, pbuf_get_field, pbuf_old_tim_idx
+    use physics_buffer,  only: physics_buffer_desc, pbuf_get_field
     use physics_types,   only: physics_state, physics_tend, physics_state_check
     use physics_types,   only: physics_dme_adjust, set_dry_to_wet
     use constituents,    only: cnst_get_ind, pcnst
@@ -537,7 +557,6 @@ contains
     integer                                  :: ixcldice
     integer                                  :: k
     integer                                  :: ncol, lchnk
-    integer                                  :: itim_old
     logical                                  :: moist_mixing_ratio_dycore
 
     real(r8) :: tmp_trac  (pcols,pver,pcnst) ! tmp space
@@ -554,8 +573,6 @@ contains
     ! number of active atmospheric columns
     ncol  = state%ncol
     lchnk = state%lchnk
-    ! Associate pointers with physics buffer fields
-    itim_old = pbuf_old_tim_idx()
 
     ! Validate the physics state.
     if (state_debug_checks) then
@@ -690,8 +707,7 @@ contains
     end if
 
     ! store T in buffer for use in computing dynamics T-tendency in next timestep
-    call pbuf_get_field(pbuf, dtcore_idx, dtcore,                             &
-         start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, dtcore_idx, dtcore)
     do k = 1,pver
       dtcore(:ncol,k) = state%t(:ncol,k)
     end do
@@ -726,8 +742,7 @@ contains
     !-----------------------------------------------------------------------
 
     use physics_buffer,    only: physics_buffer_desc, pbuf_get_field
-    use physics_buffer,    only: pbuf_get_index, pbuf_old_tim_idx
-    use physics_buffer,    only: dyn_time_lvls
+    use physics_buffer,    only: pbuf_get_index
     use physics_types,     only: physics_state_check, physics_tend_init
     use constituents,      only: cnst_get_ind
 
@@ -767,7 +782,6 @@ contains
     integer                  :: nstep       ! current timestep number
     integer                  :: lchnk       ! chunk identifier
     integer                  :: ncol        ! number of atmospheric columns
-    integer                  :: itim_old
     integer                  :: ixcldliq
     integer                  :: ixcldice
     integer                  :: m, m_cnst
@@ -795,11 +809,8 @@ contains
     nstep = get_nstep()
 
     ! Associate pointers with physics buffer fields
-    itim_old = pbuf_old_tim_idx()
-
-    ! Associate pointers with physics buffer fields
-    call pbuf_get_field(pbuf, teout_idx, teout, (/1,itim_old/), (/pcols,1/))
-    call pbuf_get_field(pbuf, dtcore_idx, dtcore, start=(/1,1,itim_old/), kount=(/pcols,pver,1/) )
+    call pbuf_get_field(pbuf, teout_idx, teout)
+    call pbuf_get_field(pbuf, dtcore_idx, dtcore)
 
     call pbuf_get_field(pbuf, qini_idx, qini)
     if (moist_physics) then
@@ -875,7 +886,7 @@ contains
     call outfld('TEFIX', state%te_cur(:,dyn_te_idx), pcols, lchnk   )
 
     ! T tendency due to dynamics
-    if( nstep > dyn_time_lvls-1 ) then
+    if( nstep > 0 ) then
       dtcore(:ncol,:pver) = (state%t(:ncol,:pver) - dtcore(:ncol,:pver))/ztodt
       call outfld( 'DTCORE', dtcore, pcols, lchnk )
     end if
@@ -1021,6 +1032,7 @@ contains
     use physics_types,       only: physics_state
     use physics_buffer,      only: physics_buffer_desc
     use nudging,             only: Nudge_Model, nudging_timestep_init
+    use phys_grid_ctem,      only: phys_grid_ctem_diags
 
     implicit none
 
@@ -1035,6 +1047,8 @@ contains
     ! Update Nudging values, if needed
     !----------------------------------
     if(Nudge_Model) call nudging_timestep_init(phys_state)
+
+    call phys_grid_ctem_diags(phys_state)
 
   end subroutine phys_timestep_init
 
